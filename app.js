@@ -1,6 +1,8 @@
 (() => {
+  // Register the service worker as early as possible so the app can boot offline on subsequent launches.
+  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).catch(()=>{}); }
   const KEY='poulettos-state-v3';
-  const APP_VERSION='3.4';
+  const APP_VERSION='3.5';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
@@ -190,7 +192,7 @@
   function formatSyncDate(value){if(!value)return 'Jamais';const d=new Date(value);if(Number.isNaN(d.getTime()))return 'Jamais';return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});}
   function setSync(text,lastAt){const p=$('#syncPill');if(p)p.textContent=text;const icon=$('#syncIcon');if(icon)icon.textContent=text.includes('Synchro')?'↻':text.startsWith('✓')?'✓':text.startsWith('!')?'!':'↻';const last=$('#syncLast');if(last)last.textContent=lastAt?formatSyncDate(lastAt):formatSyncDate(state.meta?.lastSyncAt);}
   async function syncNow(){const cfg=window.POULETTOS_CONFIG||{};const localSnapshot=structuredClone(state);if(syncInProgress)return;if(!cfg.API_URL){setSync('! API non configurée');return}if(!navigator.onLine){setSync('! Hors ligne');return}if(!googleIdToken){setSync('! Connexion requise');return}syncInProgress=true;setSync('↻ Synchro…');const btn=$('#syncBtn');if(btn)btn.disabled=true;try{const syncState=structuredClone(state);syncState.entries=[...state.entries,...(state.deletedEntryIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];syncState.hens=[...state.hens,...(state.deletedHenIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];syncState.meta=syncState.meta||{};syncState.meta.serverKnownIds=state.meta?.serverKnownIds||{hens:[],entries:[]};const payload={action:'sync',idToken:googleIdToken,clientState:syncState,deviceId};const r=await fetch(cfg.API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});const data=await r.json();if(!data.ok)throw new Error(data.error||'sync failed');if(data.state){const returned=normalizeState(data.state);returned.meta.lastSyncAt=new Date().toISOString();returned.meta.serverKnownIds=data.state.meta?.serverKnownIds||data.state.meta?.knownIds||returned.meta.serverKnownIds||{hens:[],entries:[]};state=returned;save();}else{state.meta.lastSyncAt=new Date().toISOString();save();}setSync('✓ Synchronisé',state.meta.lastSyncAt);renderHome();renderHistory();renderHens();renderStats();}catch(err){setSync('! Échec');console.warn('Poulettos sync',err);toast('Synchronisation impossible')}finally{syncInProgress=false;if(btn)btn.disabled=false}}
-  function syncSoon(){return syncNow()}
+  function syncSoon(){setTimeout(()=>syncNow(),0);}
   $('#syncBtn').addEventListener('click',syncNow);
   $('#profileBtn').addEventListener('click',toggleProfileMenu);
   $('#logoutBtn').addEventListener('click',logout);
@@ -199,5 +201,16 @@
     if(menu&&!menu.classList.contains('hidden')&&!menu.contains(e.target)&&!btn.contains(e.target))menu.classList.add('hidden');
   });
   window.addEventListener('online',()=>syncNow());
-  window.addEventListener('load',()=>{if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});const hasLocalUser=!!state.user?.email;if(hasLocalUser){$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');navigate('home');}setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);initAuth();});
+  window.addEventListener('load',()=>{
+    const hasLocalUser=!!state.user?.email;
+    // Offline-first: local state is enough to open and use the app. Google is only needed for sync.
+    if(hasLocalUser){
+      $('#loginScreen').classList.add('hidden');
+      $('#app').classList.remove('hidden');
+      navigate('home');
+    }
+    setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);
+    if(navigator.onLine) initAuth();
+    else if(hasLocalUser) setSync('● Hors ligne',state.meta?.lastSyncAt);
+  });
 })();
