@@ -295,6 +295,13 @@
           setSync('! Reconnexion Google…');
           return;
         }
+        if(!retryAfterAuth && /temporairement occupée|lock timeout|holding the lock/i.test(msg)){
+          setSync('↻ Nouvelle tentative…');
+          syncInProgress=false;
+          if(btn)btn.disabled=false;
+          setTimeout(()=>syncNow(true),3500);
+          return;
+        }
         throw new Error(msg);
       }
       if(data.state){const returned=normalizeState(data.state);returned.meta.lastSyncAt=new Date().toISOString();returned.meta.serverKnownIds=data.state.meta?.serverKnownIds||data.state.meta?.knownIds||returned.meta.serverKnownIds||{hens:[],entries:[]};state=returned;await save();}
