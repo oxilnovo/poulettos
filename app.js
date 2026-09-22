@@ -3,7 +3,7 @@
   if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).then(r=>r.update()).catch(()=>{}); }
   const KEY='poulettos-state-v3';
   const CACHE_KEY='poulettos-local-cache-v3';
-  const APP_VERSION='3.11';
+  const APP_VERSION='3.13';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
@@ -106,7 +106,7 @@
   function hasLocalData(){
     try{return !!(localStorage.getItem(KEY)||localStorage.getItem(CACHE_KEY)||localStorage.getItem('poulettos-state-v2')||localStorage.getItem('pouleco-state-v1'));}catch{return false}
   }
-  async async function save(){
+  async function save(){
     state.meta.updatedAt=new Date().toISOString();
     state.meta.deviceId=deviceId;
     const serialized=JSON.stringify(state);
@@ -252,7 +252,16 @@
       // auto_select avoids forcing the account chooser when Google can identify the user.
       try{window.google.accounts.id.prompt()}catch(e){}
     };
-    if(window.google?.accounts?.id)render();else setTimeout(render,700);
+    if(window.google?.accounts?.id) render();
+    else {
+      let tries=0;
+      const waitForGoogle=()=>{
+        if(window.google?.accounts?.id){render();return;}
+        if(++tries<20)setTimeout(waitForGoogle,500);
+        else { const hint=$('#authHint'); if(hint)hint.textContent='Connexion Google indisponible. Vérifiez votre connexion puis rechargez la page.'; }
+      };
+      setTimeout(waitForGoogle,250);
+    }
   }
   function ensureFreshGoogleToken(){
     const payload=googleIdToken?decodeJwtPayload(googleIdToken):null;
