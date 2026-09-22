@@ -1,6 +1,6 @@
 (() => {
   // Register the service worker as early as possible so the app can boot offline on subsequent launches.
-  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).catch(()=>{}); }
+  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).then(r=>r.update()).catch(()=>{}); }
   const KEY='poulettos-state-v3';
   const CACHE_KEY='poulettos-local-cache-v3';
   const APP_VERSION='3.6';
@@ -13,6 +13,8 @@
     meta:{updatedAt:null,deviceId:null,serverKnownIds:{hens:[],entries:[]}}
   };
   let state=load();
+  let localReady=false;
+  const DB_NAME='poulettos-local-db-v1', DB_STORE='state', DB_KEY='current';
   let period='week', periodAnchor=isoDate(new Date());
   let historySort='date', historyOrder='desc';
   let totalRangeEnabled=false,totalRangeStart='',totalRangeEnd='',editingId=null,googleIdToken='',syncInProgress=false;
@@ -37,6 +39,36 @@
     else if(s?.meta?.knownIds) base.meta.serverKnownIds={hens:[...(s.meta.knownIds.hens||[])],entries:[...(s.meta.knownIds.entries||[])]};
     return base;
   }
+  function openLocalDB(){
+    return new Promise((resolve,reject)=>{
+      if(!('indexedDB' in window)) return resolve(null);
+      const req=indexedDB.open(DB_NAME,1);
+      req.onupgradeneeded=()=>{try{req.result.createObjectStore(DB_STORE);}catch{}};
+      req.onsuccess=()=>resolve(req.result);
+      req.onerror=()=>resolve(null);
+    });
+  }
+  async function readIndexedState(){
+    const db=await openLocalDB();
+    if(!db)return null;
+    return new Promise(resolve=>{
+      try{const tx=db.transaction(DB_STORE,'readonly'),req=tx.objectStore(DB_STORE).get(DB_KEY);req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>resolve(null);}catch{resolve(null)}
+    });
+  }
+  async function writeIndexedState(value){
+    const db=await openLocalDB();
+    if(!db)return;
+    await new Promise(resolve=>{try{const tx=db.transaction(DB_STORE,'readwrite');tx.objectStore(DB_STORE).put(value,DB_KEY);tx.oncomplete=()=>resolve();tx.onerror=()=>resolve();}catch{resolve()}});
+  }
+  async function restoreLocalState(){
+    const indexed=await readIndexedState();
+    if(indexed){state=normalizeState(indexed);localReady=true;return true;}
+    const current=load();
+    state=normalizeState(current);
+    localReady=hasLocalData();
+    if(localReady) await writeIndexedState(state);
+    return localReady;
+  }
   function load(){
     try{
       const raw=JSON.parse(localStorage.getItem(KEY)||localStorage.getItem(CACHE_KEY)||'null');
@@ -49,7 +81,7 @@
   function hasLocalData(){
     try{return !!(localStorage.getItem(KEY)||localStorage.getItem(CACHE_KEY)||localStorage.getItem('poulettos-state-v2')||localStorage.getItem('pouleco-state-v1'));}catch{return false}
   }
-  function save(){state.meta.updatedAt=new Date().toISOString();state.meta.deviceId=deviceId;const serialized=JSON.stringify(state);try{localStorage.setItem(KEY,serialized);localStorage.setItem(CACHE_KEY,serialized);}catch{}}
+  function save(){state.meta.updatedAt=new Date().toISOString();state.meta.deviceId=deviceId;const serialized=JSON.stringify(state);try{localStorage.setItem(KEY,serialized);localStorage.setItem(CACHE_KEY,serialized);}catch{}; localReady=true; writeIndexedState(state).catch(()=>{});}
   function isoDate(d){const z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`}
   function dateOnly(s){return new Date(`${s}T12:00:00`)}
   function entryDayKey(v){if(typeof v==='string'){const m=v.match(/^(\d{4}-\d{2}-\d{2})/);if(m)return m[1]}return isoDate(new Date(v))}
@@ -200,20 +232,19 @@
     if(menu&&!menu.classList.contains('hidden')&&!menu.contains(e.target)&&!btn.contains(e.target))menu.classList.add('hidden');
   });
   window.addEventListener('online',()=>syncNow());
-  window.addEventListener('load',()=>{
+  window.addEventListener('load',async()=>{
+    // Restore the local database BEFORE rendering or authenticating. IndexedDB is the durable
+    // offline source of truth; localStorage remains a compatibility backup.
+    await restoreLocalState();
     const hasLocalUser=!!state.user?.email;
-    const localCacheExists=hasLocalData();
-    // True offline-first: if a local cache exists, render it immediately and only then sync.
-    // On a first launch with no local cache, do not pretend that the database is empty: wait for
-    // the initial online sync to populate the local cache. If offline on first launch, the app
-    // still opens and can be used; its first successful sync will populate the cache.
-    if(hasLocalUser || localCacheExists){
+    const localCacheExists=localReady && (!!state.user?.email || state.hens.length>0 || state.entries.length>0 || !!state.meta?.lastSyncAt);
+    if(localCacheExists){
       $('#loginScreen').classList.add('hidden');
       $('#app').classList.remove('hidden');
       navigate('home');
+      setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);
     }
-    setSync(state.meta?.lastSyncAt?'✓ Synchronisé':(navigator.onLine?'● Local':'● Hors ligne'),state.meta?.lastSyncAt);
     if(navigator.onLine) initAuth();
-    else if(hasLocalUser || localCacheExists) setSync('● Hors ligne',state.meta?.lastSyncAt);
+    else if(localCacheExists) setSync('● Hors ligne',state.meta?.lastSyncAt);
   });
 })();
