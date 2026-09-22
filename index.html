@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#f58ca4" />
+  <meta name="description" content="Poulettos — suivi simple des œufs pondus par vos poules." />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%23ffdfe6'/%3E%3Ctext x='50' y='65' text-anchor='middle' font-size='52'%3E🐔%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+  <title>Poulettos</title>
+</head>
+<body>
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <div id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <div class="brand-mark">🐔</div>
+      <h1>Poulettos</h1>
+      <p>Suivez vos œufs, naturellement !</p>
+      <button id="loginDemo" class="primary-btn">Entrer en mode démo</button>
+      <div id="googleBtn" class="google-btn-wrap"></div>
+      <small id="authHint">La connexion Google pourra être activée dans <code>config.js</code>.</small>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <header class="topbar">
+      <button class="icon-btn" id="menuBtn" aria-label="Menu">☰</button>
+      <div class="brand-mini"><span class="brand-chicken">🐔</span><strong>Poulettos</strong></div>
+      <button class="avatar" id="profileBtn" aria-label="Profil">E</button>
+    </header>
+
+    <main class="content">
+      <section id="view-home" class="view active">
+        <div class="hello-row">
+          <div><div class="eyebrow">Aujourd'hui</div><h2>Bonjour <span id="helloName">Edoardo</span> !</h2><p>Vos poules ont pondu…</p></div>
+          <div class="sync-pill" id="syncPill">● Local</div>
+        </div>
+        <div class="hero-card">
+          <div class="egg-orb">🥚</div>
+          <div><div class="hero-number" id="todayCount">0</div><div>œufs aujourd'hui</div></div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card"><strong id="weekCount">0</strong><span>cette semaine</span></div>
+          <div class="stat-card"><strong id="monthCount">0</strong><span>ce mois-ci</span></div>
+          <div class="stat-card"><strong id="totalCount">0</strong><span>depuis le début</span></div>
+        </div>
+        <div class="section-head"><h3>Dernières saisies</h3><button class="text-btn" data-nav="history">Tout voir →</button></div>
+        <div id="recentList" class="list-card"></div>
+        <button class="big-add" data-nav="entry"><span>＋</span> Ajouter des œufs</button>
+      </section>
+
+      <section id="view-entry" class="view">
+        <div class="page-title"><button class="back-btn" data-nav="home">‹</button><div><div class="eyebrow" id="entryEyebrow">Saisie rapide</div><h2 id="entryTitle">Nouveaux œufs</h2></div></div>
+        <form id="entryForm" class="form-card">
+          <div class="date-grid single-date">
+            <div><label for="entryDate">Date</label><input id="entryDate" type="date" required /></div>
+          </div>
+          <div class="batch-head"><label>Œufs</label><button type="button" class="small-add" id="addEggRow">＋ Ajouter un œuf</button></div>
+          <div id="eggRows" class="egg-rows"></div>
+          <label for="note">Une note ? <span>(facultatif)</span></label>
+          <textarea id="note" rows="2" placeholder="Ex. œufs plus petits aujourd'hui…"></textarea>
+          <button class="primary-btn" type="submit" id="saveEntryBtn">Enregistrer</button>
+          <button class="secondary-btn hidden" type="button" id="cancelEdit">Annuler la modification</button>
+        </form>
+      </section>
+
+      <section id="view-stats" class="view">
+        <div class="page-title"><div><div class="eyebrow">Analyse</div><h2>Statistiques</h2></div></div>
+        <div class="tabs"><button class="active" data-period="week">Semaine</button><button data-period="month">Mois</button><button data-period="year">Année</button><button data-period="all">Total</button></div>
+        <div class="period-picker"><div><label for="periodDate">Choisir une date</label><input id="periodDate" type="date" aria-label="Choisir une date pour la période"></div><div id="periodHint" class="period-hint">Cette date sert à choisir la semaine.</div></div>
+        <div id="totalRangeOptions" class="total-range-options"><label class="range-toggle"><input id="totalRangeToggle" type="checkbox"><span>Analyser une période personnalisée</span></label><div id="totalRangePicker" class="total-range-picker hidden"><div><label for="totalStart">Du</label><input id="totalStart" type="date"></div><div><label for="totalEnd">Au</label><input id="totalEnd" type="date"></div></div></div>
+        <div class="metric-card"><div class="metric-egg">🥚</div><div class="period-metric"><div><strong id="periodTotal">0</strong><span>œufs sur la période</span></div><div class="metric-divider"></div><div><strong id="averageWeight">0 g</strong><span>poids moyen / œuf</span></div></div></div>
+        <div class="chart-card"><div class="card-title"><h3>Production</h3><span id="chartCaption"></span></div><div id="barChart" class="bar-chart"></div></div>
+        <div id="totalSummary" class="total-summary hidden">
+          <div class="card-title"><h3>Bilan historique</h3><span>depuis le début</span></div>
+          <div class="total-summary-grid">
+            <div><strong id="totalSince">Aucune donnée</strong><span>début du suivi</span></div>
+            <div><strong id="totalActiveHens">0</strong><span>poules actives</span></div>
+            <div><strong id="totalBestStreak">0 jour</strong><span>plus long streak</span></div>
+          </div>
+          <div class="total-hen-list" id="totalHenRows"></div>
+        </div>
+        <div class="chart-card"><div class="card-title"><h3>Répartition par poule</h3></div><div id="henStats"></div></div>
+      </section>
+
+      <section id="view-hens" class="view">
+        <div class="page-title"><div><div class="eyebrow">Votre élevage</div><h2>Mes poules</h2></div><button class="round-add" id="addHen">＋</button></div>
+        <div class="unknown-hen-note">🥚 <div><strong>Poule inconnue</strong><br>À utiliser quand vous ne savez pas laquelle a pondu.</div></div>
+        <div id="henList" class="hen-list"></div>
+      </section>
+
+      <section id="view-history" class="view">
+        <div class="page-title"><button class="back-btn" data-nav="home">‹</button><div><div class="eyebrow">Journal</div><h2>Historique</h2></div></div>
+        <div class="history-toolbar"><span id="historyCount">0 œuf</span><span>Appuyez sur une ligne pour modifier</span></div>
+        <div id="historyList" class="history-list"></div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <button data-nav="home" class="active"><span>⌂</span><small>Accueil</small></button>
+      <button data-nav="history"><span>☷</span><small>Historique</small></button>
+      <button data-nav="stats"><span>▥</span><small>Stats</small></button>
+      <button data-nav="hens"><span>🐔</span><small>Poules</small></button>
+      <button class="floating-add" data-nav="entry" aria-label="Ajouter des œufs"><span>＋</span></button>
+    </nav>
+  </div>
+
+  <div id="henModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="henModalTitle">
+    <div class="modal-card">
+      <div class="modal-head"><div><div class="eyebrow" id="henModalEyebrow">Poule</div><h2 id="henModalTitle">Modifier la poule</h2></div><button type="button" class="modal-close" id="closeHenModal">×</button></div>
+      <form id="henForm">
+        <div class="hen-photo-editor">
+          <div id="henPreview" class="hen-preview">🐔</div>
+          <div><label for="henImage">Photo</label><input id="henImage" type="file" accept="image/*" /><small>JPG/PNG, photo stockée localement.</small></div>
+        </div>
+        <label for="henName">Nom</label><input id="henName" type="text" maxlength="40" required placeholder="Ex. Lola" />
+        <label for="henBreed">Race / description <span>(facultatif)</span></label><input id="henBreed" type="text" maxlength="50" placeholder="Ex. Rousse" />
+        <label for="henEmoji">Emoji <span>(si aucune photo)</span></label><input id="henEmoji" type="text" maxlength="4" placeholder="🐔" />
+        <div id="deceasedDateWrap" class="hidden"><label for="deceasedDate">Date du décès</label><input id="deceasedDate" type="date" /></div>
+        <button class="primary-btn" type="submit">Enregistrer</button>
+        <button class="archive-hen-btn hidden" type="button" id="archiveHenBtn">🐔 Marquer comme décédée</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</body>
+</html>
