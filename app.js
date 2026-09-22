@@ -2,7 +2,7 @@
   const KEY='poulettos-state-v3';
   const UNKNOWN='unknown';
   const defaultState={
-    user:{name:'Edoardo',email:'demo@poulettos.local'},
+    user:{name:'',email:''},
     hens:[
       {id:'h1',name:'Lola',breed:'Rousse',emoji:'🐔',status:'active',deceasedAt:null},
       {id:'h2',name:'Moka',breed:'Noire',emoji:'🐓',status:'active',deceasedAt:null},
@@ -23,12 +23,17 @@
   function normalizeState(s){
     const base=structuredClone(defaultState);
     base.user=s?.user||base.user;
-    base.hens=(s?.hens||base.hens).map(h=>({...h,status:h.status||'active',deceasedAt:h.deceasedAt||null}));
+    if(String(base.user.email||'').includes('demo@poulettos.local')) base.user={name:'',email:''};
+    base.hens=(s?.hens||[]).map(h=>({...h,status:h.status||'active',deceasedAt:h.deceasedAt||null,updatedAt:h.updatedAt||null,deleted:!!h.deleted})).filter(h=>!h.deleted);
     base.entries=(s?.entries||[]).flatMap(e=>{
       const hid=e.henId ?? (e.henIds?.[0]||UNKNOWN);
       return [{id:e.id||uid(),date:e.date,weight:Number(e.weight)||0,henId:hid,note:e.note||'',updatedAt:e.updatedAt||null,deleted:!!e.deleted}];
     }).filter(e=>!e.deleted);
-    base.deletedEntryIds=[...(s?.deletedEntryIds||[])];base.meta={...(s?.meta||{}),deviceId};
+    base.deletedEntryIds=[...(s?.deletedEntryIds||[])];
+    base.deletedHenIds=[...(s?.deletedHenIds||[])];
+    base.meta={...(s?.meta||{}),deviceId};
+    if(s?.meta?.serverKnownIds) base.meta.serverKnownIds={hens:[...(s.meta.serverKnownIds.hens||[])],entries:[...(s.meta.serverKnownIds.entries||[])]};
+    else if(s?.meta?.knownIds) base.meta.serverKnownIds={hens:[...(s.meta.knownIds.hens||[])],entries:[...(s.meta.knownIds.entries||[])]};
     return base;
   }
   function load(){
@@ -103,15 +108,14 @@
 
   function renderHistory(){$('#historyCount').textContent=`${state.entries.length} œuf${state.entries.length>1?'s':''}`;$('#historyList').innerHTML=state.entries.map(e=>`<div class="history-row"><button class="history-main" data-edit="${e.id}"><div class="history-egg">🥚</div><div><strong>${Number(e.weight).toFixed(0)} g · ${escapeHtml(henName(e.henId))}</strong><div class="row-time">${fmt(dateOnly(entryDayKey(e.date)))}${e.note?' · '+escapeHtml(e.note):''}</div></div></button><button class="delete-btn" data-delete="${e.id}" aria-label="Supprimer">🗑️</button></div>`).join('')||'<div class="history-row"><span class="row-time">Historique vide.</span></div>';$$('[data-edit]').forEach(b=>b.onclick=()=>editEntry(b.dataset.edit));$$('[data-delete]').forEach(b=>b.onclick=()=>{if(!confirm('Supprimer cet œuf ?'))return;const deleted=state.entries.find(e=>e.id===b.dataset.delete);if(deleted){deleted.deleted=true;deleted.updatedAt=new Date().toISOString();}state.entries=state.entries.filter(e=>e.id!==b.dataset.delete);state.deletedEntryIds=state.deletedEntryIds||[];if(deleted)state.deletedEntryIds.push(deleted.id);save();renderHistory();renderHome();toast('Entrée supprimée');syncSoon()})}
 
-  $('#loginDemo').onclick=()=>{googleIdToken='';startApp({name:'Edoardo',email:'demo@poulettos.local'})};
-  function startApp(user){state.user=user;save();$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');navigate('home');syncSoon()}
-  function initAuth(){const id=window.POULETTOS_CONFIG?.GOOGLE_CLIENT_ID;if(!id)return;const render=()=>{if(!window.google?.accounts?.id)return;window.google.accounts.id.initialize({client_id:id,callback:r=>{try{googleIdToken=r.credential;const p=JSON.parse(atob(r.credential.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));startApp({name:p.name||p.email.split('@')[0],email:p.email})}catch{toast('Connexion impossible')}}});window.google.accounts.id.renderButton($('#googleBtn'),{theme:'outline',size:'large',shape:'pill',width:290})};if(window.google?.accounts?.id)render();else setTimeout(render,700)}
+  function startApp(user){state.user={name:user.name||user.email.split('@')[0],email:String(user.email).toLowerCase()};save();$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');navigate('home');syncSoon()}
+  function initAuth(){const id=window.POULETTOS_CONFIG?.GOOGLE_CLIENT_ID;if(!id)return;const render=()=>{if(!window.google?.accounts?.id)return;window.google.accounts.id.initialize({client_id:id,auto_select:true,use_fedcm_for_prompt:true,callback:r=>{try{googleIdToken=r.credential;const p=JSON.parse(atob(r.credential.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));startApp({name:p.name||p.email.split('@')[0],email:p.email})}catch{toast('Connexion impossible')}}});window.google.accounts.id.renderButton($('#googleBtn'),{theme:'outline',size:'large',shape:'pill',width:290});try{google.accounts.id.prompt()}catch(e){}};if(window.google?.accounts?.id)render();else setTimeout(render,700)}
 
   function formatSyncDate(value){if(!value)return 'Jamais';const d=new Date(value);if(Number.isNaN(d.getTime()))return 'Jamais';return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});}
   function setSync(text,lastAt){const p=$('#syncPill');if(p)p.textContent=text;const icon=$('#syncIcon');if(icon)icon.textContent=text.includes('Synchro')?'↻':text.startsWith('✓')?'✓':text.startsWith('!')?'!':'↻';const last=$('#syncLast');if(last)last.textContent=lastAt?formatSyncDate(lastAt):formatSyncDate(state.meta?.lastSyncAt);}
-  async function syncNow(){const cfg=window.POULETTOS_CONFIG||{};if(syncInProgress)return;if(!cfg.API_URL||state.user.email.includes('demo@')){setSync('● Local');return}if(!navigator.onLine){setSync('! Hors ligne');return}if(!googleIdToken){setSync('! Connexion requise');return}syncInProgress=true;setSync('↻ Synchro…');const btn=$('#syncBtn');if(btn)btn.disabled=true;try{const syncState=structuredClone(state);syncState.entries=[...state.entries,...(state.deletedEntryIds||[]).map(id=>({id,deleted:true,updatedAt:state.meta.updatedAt}))];syncState.meta=syncState.meta||{};syncState.meta.serverKnownIds=state.meta?.serverKnownIds||{hens:[],entries:[]};const payload={action:'sync',idToken:googleIdToken,clientState:syncState,user:{name:state.user.name,email:state.user.email},deviceId};const r=await fetch(cfg.API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});const data=await r.json();if(!data.ok)throw new Error(data.error||'sync failed');if(data.state){state=normalizeState(data.state);state.meta.lastSyncAt=data.state.meta?.updatedAt||new Date().toISOString();save();}else{state.meta.lastSyncAt=new Date().toISOString();save();}setSync('✓ Synchronisé',state.meta.lastSyncAt);renderHome();renderHistory();renderHens();renderStats();}catch(err){setSync('! Échec');console.warn('Poulettos sync',err);toast('Synchronisation impossible')}finally{syncInProgress=false;if(btn)btn.disabled=false}}
+  async function syncNow(){const cfg=window.POULETTOS_CONFIG||{};if(syncInProgress)return;if(!cfg.API_URL){setSync('! API non configurée');return}if(!navigator.onLine){setSync('! Hors ligne');return}if(!googleIdToken){setSync('! Connexion requise');return}syncInProgress=true;setSync('↻ Synchro…');const btn=$('#syncBtn');if(btn)btn.disabled=true;try{const syncState=structuredClone(state);syncState.entries=[...state.entries,...(state.deletedEntryIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];syncState.hens=[...state.hens,...(state.deletedHenIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];syncState.meta=syncState.meta||{};syncState.meta.serverKnownIds=state.meta?.serverKnownIds||{hens:[],entries:[]};const payload={action:'sync',idToken:googleIdToken,clientState:syncState,deviceId};const r=await fetch(cfg.API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});const data=await r.json();if(!data.ok)throw new Error(data.error||'sync failed');if(data.state){const returned=normalizeState(data.state);returned.meta.lastSyncAt=new Date().toISOString();returned.meta.serverKnownIds=data.state.meta?.serverKnownIds||data.state.meta?.knownIds||returned.meta.serverKnownIds||{hens:[],entries:[]};state=returned;save();}else{state.meta.lastSyncAt=new Date().toISOString();save();}setSync('✓ Synchronisé',state.meta.lastSyncAt);renderHome();renderHistory();renderHens();renderStats();}catch(err){setSync('! Échec');console.warn('Poulettos sync',err);toast('Synchronisation impossible')}finally{syncInProgress=false;if(btn)btn.disabled=false}}
   function syncSoon(){return syncNow()}
   $('#syncBtn').addEventListener('click',syncNow);
   window.addEventListener('online',()=>syncNow());
-  window.addEventListener('load',()=>{if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});initAuth();setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);});
+  window.addEventListener('load',()=>{if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});if(state.user?.email){$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');navigate('home');}initAuth();setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);});
 })();
