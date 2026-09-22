@@ -3,7 +3,7 @@
   if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).then(r=>r.update()).catch(()=>{}); }
   const KEY='poulettos-state-v3';
   const CACHE_KEY='poulettos-local-cache-v3';
-  const APP_VERSION='3.6';
+  const APP_VERSION='3.8';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
@@ -60,13 +60,38 @@
     if(!db)return;
     await new Promise(resolve=>{try{const tx=db.transaction(DB_STORE,'readwrite');tx.objectStore(DB_STORE).put(value,DB_KEY);tx.oncomplete=()=>resolve();tx.onerror=()=>resolve();}catch{resolve()}});
   }
+  function snapshotScore(s){
+    const n=(s?.hens?.length||0)+(s?.entries?.length||0);
+    const t=new Date(s?.meta?.updatedAt||0).getTime()||0;
+    return {count:n,time:t,hasUser:!!s?.user?.email};
+  }
+  function chooseLocalSnapshot(a,b){
+    if(!a)return b||null;
+    if(!b)return a;
+    const A=snapshotScore(a),B=snapshotScore(b);
+    // Prefer the most recently saved snapshot. If timestamps are equal/missing,
+    // never replace a populated snapshot with an empty one.
+    if(B.time>A.time)return b;
+    if(A.time>B.time)return a;
+    if(B.count>A.count)return b;
+    if(A.count>B.count)return a;
+    if(B.hasUser&&!A.hasUser)return b;
+    return a;
+  }
   async function restoreLocalState(){
-    const indexed=await readIndexedState();
-    if(indexed){state=normalizeState(indexed);localReady=true;return true;}
+    // localStorage is synchronous and is available immediately; IndexedDB is the
+    // durable database. Reconcile both instead of blindly letting an older/empty
+    // IndexedDB snapshot overwrite valid local data.
     const current=load();
-    state=normalizeState(current);
-    localReady=hasLocalData();
-    if(localReady) await writeIndexedState(state);
+    const indexed=await readIndexedState();
+    const chosen=chooseLocalSnapshot(normalizeState(current),indexed?normalizeState(indexed):null) || structuredClone(defaultState);
+    state=normalizeState(chosen);
+    localReady=snapshotScore(state).count>0 || !!state.user?.email || !!state.meta?.lastSyncAt;
+    if(localReady){
+      const serialized=JSON.stringify(state);
+      try{localStorage.setItem(KEY,serialized);localStorage.setItem(CACHE_KEY,serialized);}catch{}
+      await writeIndexedState(state);
+    }
     return localReady;
   }
   function load(){
@@ -81,7 +106,14 @@
   function hasLocalData(){
     try{return !!(localStorage.getItem(KEY)||localStorage.getItem(CACHE_KEY)||localStorage.getItem('poulettos-state-v2')||localStorage.getItem('pouleco-state-v1'));}catch{return false}
   }
-  function save(){state.meta.updatedAt=new Date().toISOString();state.meta.deviceId=deviceId;const serialized=JSON.stringify(state);try{localStorage.setItem(KEY,serialized);localStorage.setItem(CACHE_KEY,serialized);}catch{}; localReady=true; writeIndexedState(state).catch(()=>{});}
+  async function save(){
+    state.meta.updatedAt=new Date().toISOString();
+    state.meta.deviceId=deviceId;
+    const serialized=JSON.stringify(state);
+    try{localStorage.setItem(KEY,serialized);localStorage.setItem(CACHE_KEY,serialized);}catch{}
+    localReady=true;
+    await writeIndexedState(state);
+  }
   function isoDate(d){const z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`}
   function dateOnly(s){return new Date(`${s}T12:00:00`)}
   function entryDayKey(v){if(typeof v==='string'){const m=v.match(/^(\d{4}-\d{2}-\d{2})/);if(m)return m[1]}return isoDate(new Date(v))}
@@ -231,6 +263,15 @@
     const menu=$('#profileMenu'),btn=$('#profileBtn');
     if(menu&&!menu.classList.contains('hidden')&&!menu.contains(e.target)&&!btn.contains(e.target))menu.classList.add('hidden');
   });
+
+  window.addEventListener('pagehide',()=>{
+    try{
+      const serialized=JSON.stringify(state);
+      localStorage.setItem(KEY,serialized);
+      localStorage.setItem(CACHE_KEY,serialized);
+    }catch{}
+  });
+
   window.addEventListener('online',()=>syncNow());
   window.addEventListener('load',async()=>{
     // Restore the local database BEFORE rendering or authenticating. IndexedDB is the durable
