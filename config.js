@@ -2,5 +2,5 @@
 // Create a Google OAuth Web client ID and deploy Code.gs as a Google Apps Script Web App.
 window.POULETTOS_CONFIG = {
   GOOGLE_CLIENT_ID: '663179170370-bp361u1avupqp2ut4fqt1hlhbcikbal0.apps.googleusercontent.com',
-  API_URL: 'https://script.google.com/macros/s/AKfycbz97A40wnljqXa8H4ujCghs84JYTceOyyQCtrKIlcSKsBMYoAoY8YzGUXaYEBIeXIjP/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbyyoQW5kFy1YemueeHPhIP5eAhWHVZMsPRhi21-XMMbkrVF8pTbQZ3VfUtmVdFK4g/exec'
 };

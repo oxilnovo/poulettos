@@ -1,6 +1,6 @@
 (() => {
   const KEY='poulettos-state-v3';
-  const APP_VERSION='3.3';
+  const APP_VERSION='3.4';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
@@ -17,6 +17,7 @@
   };
   let state=load();
   let period='week', periodAnchor=isoDate(new Date());
+  let historySort='date', historyOrder='desc';
   let totalRangeEnabled=false,totalRangeStart='',totalRangeEnd='',editingId=null,googleIdToken='',syncInProgress=false;
   try{googleIdToken=localStorage.getItem(TOKEN_KEY)||'';}catch{}
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -109,7 +110,24 @@
   function openHenModal(id){const h=state.hens.find(x=>x.id===id);$('#henForm').dataset.id=id||'';$('#henModalEyebrow').textContent=id?'Modifier une poule':'Nouvelle poule';$('#henModalTitle').textContent=id?'Modifier la poule':'Ajouter une poule';$('#henName').value=h?.name||'';$('#henBreed').value=h?.breed||'';$('#henEmoji').value=h?.emoji||'🐔';$('#henImage').value='';$('#deceasedDate').value=h?.deceasedAt||'';$('#deceasedDateWrap').classList.toggle('hidden',!h||h.status!=='dead');const preview=$('#henPreview');preview.innerHTML=h?.photo?`<img src="${h.photo}" alt="">`:escapeHtml(h?.emoji||'🐔');delete preview.dataset.photo;const archiveBtn=$('#archiveHenBtn');if(h){archiveBtn.classList.remove('hidden');archiveBtn.textContent=h.status==='dead'?'↩ Réactiver cette poule':'🐔 Marquer comme décédée'}else archiveBtn.classList.add('hidden');$('#henModal').classList.remove('hidden')}
   function closeHenModal(){$('#henModal').classList.add('hidden')}$('#addHen').onclick=()=>openHenModal('');$('#closeHenModal').onclick=closeHenModal;$('#henModal').addEventListener('click',e=>{if(e.target.id==='henModal')closeHenModal()});$('#archiveHenBtn').onclick=()=>{const id=$('#henForm').dataset.id,h=state.hens.find(x=>x.id===id);if(!h)return;if(h.status==='dead'){h.status='active';h.deceasedAt=null;h.updatedAt=new Date().toISOString();toast('Poule réactivée')}else{if(!confirm(`Archiver ${h.name} comme décédée ? Ses anciennes données seront conservées.`))return;h.status='dead';h.deceasedAt=isoDate(new Date());h.updatedAt=new Date().toISOString();toast('Poule archivée')}save();closeHenModal();renderHens();renderStats();syncSoon()};$('#henImage').addEventListener('change',()=>{const file=$('#henImage').files[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{const img=new Image();img.onload=()=>{const max=500,scale=Math.min(1,max/img.width,max/img.height),c=document.createElement('canvas');c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);c.getContext('2d').drawImage(img,0,0,c.width,c.height);$('#henPreview').innerHTML=`<img src="${c.toDataURL('image/jpeg',.82)}" alt="">`;$('#henPreview').dataset.photo=c.toDataURL('image/jpeg',.82)};img.src=reader.result};reader.readAsDataURL(file)});$('#henForm').addEventListener('submit',e=>{e.preventDefault();const id=e.currentTarget.dataset.id,name=$('#henName').value.trim();if(!name){toast('Renseignez un nom');return}let h=state.hens.find(x=>x.id===id);if(!h){h={id:uid(),name:'',breed:'',emoji:'🐔',status:'active',deceasedAt:null};state.hens.push(h)}h.name=name;h.breed=$('#henBreed').value.trim();h.emoji=$('#henEmoji').value.trim()||'🐔';if($('#henPreview').dataset.photo)h.photo=$('#henPreview').dataset.photo;if(h.status==='dead')h.deceasedAt=$('#deceasedDate').value||h.deceasedAt||isoDate(new Date());h.updatedAt=new Date().toISOString();save();closeHenModal();renderHens();renderStats();toast(id?'Poule modifiée ✓':'Poule ajoutée ✓');syncSoon()});
 
-  function renderHistory(){$('#historyCount').textContent=`${state.entries.length} œuf${state.entries.length>1?'s':''}`;$('#historyList').innerHTML=state.entries.map(e=>`<div class="history-row"><button class="history-main" data-edit="${e.id}"><div class="history-egg">🥚</div><div><strong>${Number(e.weight).toFixed(0)} g · ${escapeHtml(henName(e.henId))}</strong><div class="row-time">${fmt(dateOnly(entryDayKey(e.date)))}${e.note?' · '+escapeHtml(e.note):''}</div></div></button><button class="delete-btn" data-delete="${e.id}" aria-label="Supprimer">🗑️</button></div>`).join('')||'<div class="history-row"><span class="row-time">Historique vide.</span></div>';$$('[data-edit]').forEach(b=>b.onclick=()=>editEntry(b.dataset.edit));$$('[data-delete]').forEach(b=>b.onclick=()=>{if(!confirm('Supprimer cet œuf ?'))return;const deleted=state.entries.find(e=>e.id===b.dataset.delete);if(deleted){deleted.deleted=true;deleted.updatedAt=new Date().toISOString();}state.entries=state.entries.filter(e=>e.id!==b.dataset.delete);state.deletedEntryIds=state.deletedEntryIds||[];if(deleted)state.deletedEntryIds.push(deleted.id);save();renderHistory();renderHome();toast('Entrée supprimée');syncSoon()})}
+  function renderHistory(){
+    const sortSel=$('#historySort'),orderSel=$('#historyOrder');
+    if(sortSel)sortSel.value=historySort;if(orderSel)orderSel.value=historyOrder;
+    $('#historyCount').textContent=`${state.entries.length} œuf${state.entries.length>1?'s':''}`;
+    const rows=[...state.entries].sort((a,b)=>{
+      let av,bv;
+      if(historySort==='hen'){av=henName(a.henId).toLocaleLowerCase('fr');bv=henName(b.henId).toLocaleLowerCase('fr');}
+      else if(historySort==='weight'){av=Number(a.weight)||0;bv=Number(b.weight)||0;}
+      else {av=entryDayKey(a.date);bv=entryDayKey(b.date);}
+      if(av<bv)return historyOrder==='asc'?-1:1;if(av>bv)return historyOrder==='asc'?1:-1;
+      return entryDayKey(b.date).localeCompare(entryDayKey(a.date));
+    });
+    $('#historyList').innerHTML=rows.map(e=>`<div class="history-row"><button class="history-main" data-edit="${e.id}"><div class="history-egg">🥚</div><div><strong>${Number(e.weight).toFixed(0)} g · ${escapeHtml(henName(e.henId))}</strong><div class="row-time">${fmt(dateOnly(entryDayKey(e.date)))}${e.note?' · '+escapeHtml(e.note):''}</div></div></button><button class="delete-btn" data-delete="${e.id}" aria-label="Supprimer">🗑️</button></div>`).join('')||'<div class="history-row"><span class="row-time">Historique vide.</span></div>';
+    $$('[data-edit]').forEach(b=>b.onclick=()=>editEntry(b.dataset.edit));
+    $$('[data-delete]').forEach(b=>b.onclick=()=>{if(!confirm('Supprimer cet œuf ?'))return;const deleted=state.entries.find(e=>e.id===b.dataset.delete);if(deleted){deleted.deleted=true;deleted.updatedAt=new Date().toISOString();}state.entries=state.entries.filter(e=>e.id!==b.dataset.delete);state.deletedEntryIds=state.deletedEntryIds||[];if(deleted)state.deletedEntryIds.push(deleted.id);save();renderHistory();renderHome();toast('Entrée supprimée');syncSoon()});
+  }
+  $('#historySort')?.addEventListener('change',e=>{historySort=e.target.value;renderHistory()});
+  $('#historyOrder')?.addEventListener('change',e=>{historyOrder=e.target.value;renderHistory()});
 
   function logout(){
     try{ if(window.google?.accounts?.id) google.accounts.id.disableAutoSelect(); }catch{}

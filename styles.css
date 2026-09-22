@@ -27,6 +27,7 @@
 .total-range-options{margin:-4px 0 13px;padding:11px 13px;background:#fff;border:1px solid var(--line);border-radius:16px}.range-toggle{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;color:var(--ink);cursor:pointer}.range-toggle input{accent-color:#f58ca4;width:17px;height:17px}.total-range-picker{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.total-range-picker label{display:block;font-size:10px;font-weight:800;color:var(--muted);margin-bottom:5px}.total-range-picker input{padding:9px 10px;font-size:13px}@media(max-width:380px){.total-range-picker{grid-template-columns:1fr}}
 
 /* V3.2 mobile interaction polish */
+html,body{overscroll-behavior-y:none;}
 html,body,button,a,input,select,textarea{ -webkit-tap-highlight-color: transparent; }
 button:focus{outline:none;}
 button:focus-visible{outline:2px solid #f58ca4;outline-offset:2px;}
@@ -38,3 +39,15 @@ button:focus-visible{outline:2px solid #f58ca4;outline-offset:2px;}
 .bottom-nav button small{line-height:14px;}
 .bottom-nav .floating-add{margin:0; padding:0;}
 .sync-control{-webkit-tap-highlight-color:transparent;touch-action:manipulation;}
+
+/* V3.4 Android pull-to-refresh + history sorting + app icon */
+body{overscroll-behavior-y:none;}
+.brand-mark{overflow:hidden;padding:0;background:transparent;}
+.brand-mark img{width:100%;height:100%;object-fit:cover;display:block;}
+.nav-emoji{font-size:22px!important;line-height:22px!important;width:23px;height:23px;display:grid;place-items:center;}
+.history-toolbar{gap:10px;flex-wrap:wrap;}
+.history-count-wrap{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;}
+.history-sort{display:flex;align-items:center;gap:6px;margin-left:auto;}
+.history-sort label{font-size:10px;color:var(--muted);font-weight:800;}
+.history-sort select{width:auto;min-width:86px;padding:7px 9px;font-size:11px;border-radius:10px;background:#fffafa;}
+@media(max-width:430px){.history-toolbar{align-items:stretch;flex-direction:column}.history-count-wrap{justify-content:space-between}.history-sort{margin-left:0}.history-sort select{flex:1;min-width:0}.history-sort label{width:50px;display:flex;align-items:center;}}
