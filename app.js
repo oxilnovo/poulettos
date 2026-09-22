@@ -2,18 +2,13 @@
   // Register the service worker as early as possible so the app can boot offline on subsequent launches.
   if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).catch(()=>{}); }
   const KEY='poulettos-state-v3';
-  const APP_VERSION='3.5';
+  const CACHE_KEY='poulettos-local-cache-v3';
+  const APP_VERSION='3.6';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
     user:{name:'',email:''},
-    hens:[
-      {id:'h1',name:'Lola',breed:'Rousse',emoji:'🐔',status:'active',deceasedAt:null},
-      {id:'h2',name:'Moka',breed:'Noire',emoji:'🐓',status:'active',deceasedAt:null},
-      {id:'h3',name:'Vanille',breed:'Blanche',emoji:'🐔',status:'active',deceasedAt:null},
-      {id:'h4',name:'Caramel',breed:'Cendrée',emoji:'🐔',status:'active',deceasedAt:null},
-      {id:'h5',name:'Pépite',breed:'Coucou',emoji:'🐓',status:'active',deceasedAt:null}
-    ],
+    hens:[],
     entries:[],
     meta:{updatedAt:null,deviceId:null,serverKnownIds:{hens:[],entries:[]}}
   };
@@ -44,14 +39,17 @@
   }
   function load(){
     try{
-      const raw=JSON.parse(localStorage.getItem(KEY)||'null');
+      const raw=JSON.parse(localStorage.getItem(KEY)||localStorage.getItem(CACHE_KEY)||'null');
       if(raw)return normalizeState(raw);
       const old=JSON.parse(localStorage.getItem('poulettos-state-v2')||localStorage.getItem('pouleco-state-v1')||'null');
       if(old)return normalizeState(old);
     }catch{}
     return structuredClone(defaultState);
   }
-  function save(){state.meta.updatedAt=new Date().toISOString();state.meta.deviceId=deviceId;localStorage.setItem(KEY,JSON.stringify(state));}
+  function hasLocalData(){
+    try{return !!(localStorage.getItem(KEY)||localStorage.getItem(CACHE_KEY)||localStorage.getItem('poulettos-state-v2')||localStorage.getItem('pouleco-state-v1'));}catch{return false}
+  }
+  function save(){state.meta.updatedAt=new Date().toISOString();state.meta.deviceId=deviceId;const serialized=JSON.stringify(state);try{localStorage.setItem(KEY,serialized);localStorage.setItem(CACHE_KEY,serialized);}catch{}}
   function isoDate(d){const z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`}
   function dateOnly(s){return new Date(`${s}T12:00:00`)}
   function entryDayKey(v){if(typeof v==='string'){const m=v.match(/^(\d{4}-\d{2}-\d{2})/);if(m)return m[1]}return isoDate(new Date(v))}
@@ -136,6 +134,7 @@
     googleIdToken='';
     try{localStorage.removeItem(TOKEN_KEY);}catch{}
     localStorage.removeItem(KEY);
+    localStorage.removeItem(CACHE_KEY);
     state=structuredClone(defaultState);
     state.meta.deviceId=deviceId;
     $('#profileMenu')?.classList.add('hidden');
@@ -203,14 +202,18 @@
   window.addEventListener('online',()=>syncNow());
   window.addEventListener('load',()=>{
     const hasLocalUser=!!state.user?.email;
-    // Offline-first: local state is enough to open and use the app. Google is only needed for sync.
-    if(hasLocalUser){
+    const localCacheExists=hasLocalData();
+    // True offline-first: if a local cache exists, render it immediately and only then sync.
+    // On a first launch with no local cache, do not pretend that the database is empty: wait for
+    // the initial online sync to populate the local cache. If offline on first launch, the app
+    // still opens and can be used; its first successful sync will populate the cache.
+    if(hasLocalUser || localCacheExists){
       $('#loginScreen').classList.add('hidden');
       $('#app').classList.remove('hidden');
       navigate('home');
     }
-    setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);
+    setSync(state.meta?.lastSyncAt?'✓ Synchronisé':(navigator.onLine?'● Local':'● Hors ligne'),state.meta?.lastSyncAt);
     if(navigator.onLine) initAuth();
-    else if(hasLocalUser) setSync('● Hors ligne',state.meta?.lastSyncAt);
+    else if(hasLocalUser || localCacheExists) setSync('● Hors ligne',state.meta?.lastSyncAt);
   });
 })();
