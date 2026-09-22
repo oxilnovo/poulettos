@@ -29,9 +29,13 @@
 
   <div id="app" class="app hidden">
     <header class="topbar">
-      <button class="icon-btn" id="menuBtn" aria-label="Menu">☰</button>
       <div class="brand-mini"><span class="brand-chicken">🐔</span><strong>Poulettos</strong></div>
-      <button class="avatar" id="profileBtn" aria-label="Profil">E</button>
+      <div class="topbar-actions">
+        <button class="sync-control" id="syncBtn" type="button" aria-label="Synchroniser" title="Synchroniser">
+          <span id="syncIcon">↻</span><small id="syncLast">Jamais</small>
+        </button>
+        <button class="avatar" id="profileBtn" aria-label="Profil">E</button>
+      </div>
     </header>
 
     <main class="content">
