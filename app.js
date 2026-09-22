@@ -1,5 +1,6 @@
 (() => {
   const KEY='poulettos-state-v3';
+  const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
     user:{name:'',email:''},
@@ -16,6 +17,7 @@
   let state=load();
   let period='week', periodAnchor=isoDate(new Date());
   let totalRangeEnabled=false,totalRangeStart='',totalRangeEnd='',editingId=null,googleIdToken='',syncInProgress=false;
+  try{googleIdToken=localStorage.getItem(TOKEN_KEY)||'';}catch{}
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const uid=()=>crypto.randomUUID?crypto.randomUUID():'id-'+Date.now()+'-'+Math.random().toString(36).slice(2);
   const deviceId=(()=>{let id=localStorage.getItem('poulettos-device');if(!id){id=uid();localStorage.setItem('poulettos-device',id)}return id})();
@@ -109,10 +111,9 @@
   function renderHistory(){$('#historyCount').textContent=`${state.entries.length} œuf${state.entries.length>1?'s':''}`;$('#historyList').innerHTML=state.entries.map(e=>`<div class="history-row"><button class="history-main" data-edit="${e.id}"><div class="history-egg">🥚</div><div><strong>${Number(e.weight).toFixed(0)} g · ${escapeHtml(henName(e.henId))}</strong><div class="row-time">${fmt(dateOnly(entryDayKey(e.date)))}${e.note?' · '+escapeHtml(e.note):''}</div></div></button><button class="delete-btn" data-delete="${e.id}" aria-label="Supprimer">🗑️</button></div>`).join('')||'<div class="history-row"><span class="row-time">Historique vide.</span></div>';$$('[data-edit]').forEach(b=>b.onclick=()=>editEntry(b.dataset.edit));$$('[data-delete]').forEach(b=>b.onclick=()=>{if(!confirm('Supprimer cet œuf ?'))return;const deleted=state.entries.find(e=>e.id===b.dataset.delete);if(deleted){deleted.deleted=true;deleted.updatedAt=new Date().toISOString();}state.entries=state.entries.filter(e=>e.id!==b.dataset.delete);state.deletedEntryIds=state.deletedEntryIds||[];if(deleted)state.deletedEntryIds.push(deleted.id);save();renderHistory();renderHome();toast('Entrée supprimée');syncSoon()})}
 
   function logout(){
-    try{
-      if(window.google?.accounts?.id) google.accounts.id.disableAutoSelect();
-    }catch{}
+    try{ if(window.google?.accounts?.id) google.accounts.id.disableAutoSelect(); }catch{}
     googleIdToken='';
+    try{localStorage.removeItem(TOKEN_KEY);}catch{}
     localStorage.removeItem(KEY);
     state=structuredClone(defaultState);
     state.meta.deviceId=deviceId;
@@ -120,7 +121,6 @@
     $('#app')?.classList.add('hidden');
     $('#loginScreen')?.classList.remove('hidden');
     toast('Déconnexion effectuée');
-    setTimeout(()=>initAuth(),100);
   }
 
   function toggleProfileMenu(){
@@ -130,8 +130,43 @@
     if(!open) $('#profileEmail').textContent=state.user?.email||'';
   }
 
-  function startApp(user){state.user={name:user.name||user.email.split('@')[0],email:String(user.email).toLowerCase()};save();$('#loginScreen').classList.add('hidden');$('#app').classList.remove('hidden');navigate('home');syncSoon()}
-  function initAuth(){const id=window.POULETTOS_CONFIG?.GOOGLE_CLIENT_ID;if(!id)return;const render=()=>{if(!window.google?.accounts?.id)return;window.google.accounts.id.initialize({client_id:id,auto_select:true,use_fedcm_for_prompt:true,callback:r=>{try{googleIdToken=r.credential;const p=JSON.parse(atob(r.credential.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));startApp({name:p.name||p.email.split('@')[0],email:p.email})}catch{toast('Connexion impossible')}}});window.google.accounts.id.renderButton($('#googleBtn'),{theme:'outline',size:'large',shape:'pill',width:290});try{google.accounts.id.prompt()}catch(e){}};if(window.google?.accounts?.id)render();else setTimeout(render,700)}
+  function startApp(user, token){
+    state.user={name:user.name||user.email.split('@')[0],email:String(user.email).toLowerCase()};
+    if(token){googleIdToken=token;try{localStorage.setItem(TOKEN_KEY,token);}catch{}}
+    save();
+    $('#loginScreen').classList.add('hidden');
+    $('#app').classList.remove('hidden');
+    navigate('home');
+    setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);
+    // Local first: the UI is immediately usable; synchronization runs in background.
+    setTimeout(()=>syncNow(),80);
+  }
+  function decodeJwtPayload(token){
+    try{const part=token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');return JSON.parse(atob(part.padEnd(part.length+((4-part.length%4)%4),'=')));}catch{return null}
+  }
+  function initAuth(){
+    const id=window.POULETTOS_CONFIG?.GOOGLE_CLIENT_ID;if(!id)return;
+    const stored=googleIdToken?decodeJwtPayload(googleIdToken):null;
+    if(stored?.email && stored.exp && stored.exp*1000>Date.now()+30000){
+      // Reuse the locally persisted Google session on refresh; no account chooser.
+      if(!state.user?.email) state.user={name:stored.name||stored.email.split('@')[0],email:String(stored.email).toLowerCase()};
+      if(state.user?.email){startApp({name:state.user.name||stored.name,email:state.user.email},googleIdToken);return;}
+    }
+    const render=()=>{
+      if(!window.google?.accounts?.id)return;
+      window.google.accounts.id.initialize({
+        client_id:id,auto_select:true,use_fedcm_for_prompt:true,
+        callback:r=>{try{
+          const p=decodeJwtPayload(r.credential);if(!p?.email)throw new Error('invalid');
+          startApp({name:p.name||p.email.split('@')[0],email:p.email},r.credential);
+        }catch{toast('Connexion impossible')}}
+      });
+      window.google.accounts.id.renderButton($('#googleBtn'),{theme:'outline',size:'large',shape:'pill',width:290});
+      // Only prompt when there is no valid local Google session.
+      try{google.accounts.id.prompt()}catch(e){}
+    };
+    if(window.google?.accounts?.id)render();else setTimeout(render,700);
+  }
 
   function formatSyncDate(value){if(!value)return 'Jamais';const d=new Date(value);if(Number.isNaN(d.getTime()))return 'Jamais';return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});}
   function setSync(text,lastAt){const p=$('#syncPill');if(p)p.textContent=text;const icon=$('#syncIcon');if(icon)icon.textContent=text.includes('Synchro')?'↻':text.startsWith('✓')?'✓':text.startsWith('!')?'!':'↻';const last=$('#syncLast');if(last)last.textContent=lastAt?formatSyncDate(lastAt):formatSyncDate(state.meta?.lastSyncAt);}

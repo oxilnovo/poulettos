@@ -25,3 +25,16 @@
 .total-hen-row>span{font-size:11px;color:var(--muted);min-width:48px;text-align:right}
 @media(max-width:380px){.total-summary-grid{grid-template-columns:1fr 1fr}.total-summary-grid>div:first-child{grid-column:1/-1}.total-hen-row{grid-template-columns:34px 1fr auto}.total-hen-row>span{grid-column:2;text-align:left}}
 .total-range-options{margin:-4px 0 13px;padding:11px 13px;background:#fff;border:1px solid var(--line);border-radius:16px}.range-toggle{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;color:var(--ink);cursor:pointer}.range-toggle input{accent-color:#f58ca4;width:17px;height:17px}.total-range-picker{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.total-range-picker label{display:block;font-size:10px;font-weight:800;color:var(--muted);margin-bottom:5px}.total-range-picker input{padding:9px 10px;font-size:13px}@media(max-width:380px){.total-range-picker{grid-template-columns:1fr}}
+
+/* V3.2 mobile interaction polish */
+html,body,button,a,input,select,textarea{ -webkit-tap-highlight-color: transparent; }
+button:focus{outline:none;}
+button:focus-visible{outline:2px solid #f58ca4;outline-offset:2px;}
+.bottom-nav button{border-radius:14px;margin:7px 3px;padding:3px 2px;transition:background .15s,color .15s,transform .08s;}
+.bottom-nav button.active:not(.floating-add){background:#fff0f3;color:#df6682;}
+.bottom-nav button:active:not(.floating-add){transform:scale(.97);}
+.bottom-nav .nav-icon{width:23px;height:23px;display:grid;place-items:center;}
+.bottom-nav .nav-icon svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}
+.bottom-nav button small{line-height:14px;}
+.bottom-nav .floating-add{margin:0; padding:0;}
+.sync-control{-webkit-tap-highlight-color:transparent;touch-action:manipulation;}
