@@ -3,7 +3,7 @@
   if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).then(r=>r.update()).catch(()=>{}); }
   const KEY='poulettos-state-v3';
   const CACHE_KEY='poulettos-local-cache-v3';
-  const APP_VERSION='3.10';
+  const APP_VERSION='3.11';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
