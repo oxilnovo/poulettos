@@ -106,7 +106,7 @@
   function hasLocalData(){
     try{return !!(localStorage.getItem(KEY)||localStorage.getItem(CACHE_KEY)||localStorage.getItem('poulettos-state-v2')||localStorage.getItem('pouleco-state-v1'));}catch{return false}
   }
-  async function save(){
+  async async function save(){
     state.meta.updatedAt=new Date().toISOString();
     state.meta.deviceId=deviceId;
     const serialized=JSON.stringify(state);

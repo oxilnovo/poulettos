@@ -17,20 +17,30 @@ function ensureSheets_() {
   specs.forEach(([name,headers]) => { let sh=ss.getSheetByName(name); if(!sh) sh=ss.insertSheet(name); if(sh.getLastRow()===0) sh.getRange(1,1,1,headers.length).setValues([headers]); });
 }
 
-function doGet() { ensureSheets_(); return json_({ok:true,service:'Poulettos',version:'3.1'}); }
+function doGet() { ensureSheets_(); repairEggSheet_(); return json_({ok:true,service:'Poulettos',version:'3.12'}); }
 
 function doPost(e) {
   try {
     ensureSheets_();
+    repairEggSheet_();
     const body=JSON.parse(e.postData.contents||'{}');
     if(body.action!=='sync') return json_({ok:false,error:'Unknown action'});
     const auth=authenticate_(body.idToken);
     if(!auth.ok) return json_({ok:false,error:auth.error});
     if(!isAllowed_(auth.email)) return json_({ok:false,error:'User not authorized'});
-    const lock=LockService.getScriptLock(); lock.waitLock(15000);
-    try { mergeRows_(auth.email,body.clientState||{}); return json_({ok:true,state:readState_(auth.email),user:{email:auth.email,name:auth.name}}); }
-    finally { lock.releaseLock(); }
-  } catch(err) { return json_({ok:false,error:String(err&&err.message||err)}); }
+
+    // The lock is only held while the two user datasets are merged. The merge itself
+    // uses bulk reads/writes so large datasets (thousands of eggs) do not hold the lock
+    // for dozens of seconds.
+    const lock=LockService.getScriptLock();
+    if(!lock.tryLock(30000)) return json_({ok:false,error:'Synchronisation temporairement occupée. Réessayez dans quelques secondes.'});
+    try {
+      mergeRows_(auth.email,body.clientState||{});
+      return json_({ok:true,state:readState_(auth.email),user:{email:auth.email,name:auth.name}});
+    } finally { lock.releaseLock(); }
+  } catch(err) {
+    return json_({ok:false,error:String(err&&err.message||err)});
+  }
 }
 
 function authenticate_(idToken) {
@@ -54,51 +64,140 @@ function isAllowed_(email) {
 function mergeRows_(email,state) {
   const ss=db_();
   const known=state.meta&&state.meta.serverKnownIds?state.meta.serverKnownIds:{hens:[],entries:[]};
-  mergeEntitySheet_(ss.getSheetByName(HENS_SHEET),email,state.hens||[],'hen',new Set(known.hens||[]));
-  mergeEntitySheet_(ss.getSheetByName(EGGS_SHEET),email,state.entries||[],'egg',new Set(known.entries||[]));
+  const knownHens=new Set(known.hens||[]);
+  const knownEntries=new Set(known.entries||[]);
+
+  // Permanent deletion model. Deleted IDs live in Script Properties rather than as
+  // tombstone rows in the spreadsheet.
+  recordClientDeletions_(email,state.deletedHenIds||[],'hen');
+  recordClientDeletions_(email,state.deletedEntryIds||[],'egg');
+  recordMissingAsDeleted_(email,ss.getSheetByName(HENS_SHEET),knownHens,'hen');
+  recordMissingAsDeleted_(email,ss.getSheetByName(EGGS_SHEET),knownEntries,'egg');
+
+  purgeDeletedRows_(ss.getSheetByName(HENS_SHEET),email,'hen');
+  purgeDeletedRows_(ss.getSheetByName(EGGS_SHEET),email,'egg');
+
+  // Merge in bulk. New rows are appended with one setValues() call instead of
+  // one appendRow() call per egg. Existing rows are only written when their
+  // updatedAt is newer than the server copy.
+  mergeEntitySheetBulk_(ss.getSheetByName(HENS_SHEET),email,state.hens||[],'hen');
+  mergeEntitySheetBulk_(ss.getSheetByName(EGGS_SHEET),email,state.entries||[],'egg');
+
+  purgeDeletedRows_(ss.getSheetByName(HENS_SHEET),email,'hen');
+  purgeDeletedRows_(ss.getSheetByName(EGGS_SHEET),email,'egg');
 }
 
-function mergeEntitySheet_(sh,email,entities,type,knownIds) {
-  const values=sh.getDataRange().getValues(),index=new Map();
-  for(let i=1;i<values.length;i++) if(String(values[i][0]).trim().toLowerCase()===email) index.set(String(values[i][1]),i+1);
-  entities.forEach(entity=>{
-    const id=String(entity.id||''); if(!id)return;
-    const existingRow=index.get(id),isDeleted=!!entity.deleted;
-    // If the client knew this record at the last successful sync but the row is now absent,
-    // the deletion happened in Sheets. Do not recreate it from the stale local copy.
-    if(!existingRow&&knownIds.has(id)) return;
-    if(!existingRow&&isDeleted) return;
-    const now=new Date().toISOString();
+function mergeEntitySheetBulk_(sh,email,entities,type) {
+  if(!sh) return;
+  const lastRow=sh.getLastRow();
+  const numCols=type==='hen'?10:8;
+  const values=lastRow>=2?sh.getRange(2,1,lastRow-1,numCols).getValues():[];
+  const index=new Map();
+  for(let i=0;i<values.length;i++){
+    if(String(values[i][0]).trim().toLowerCase()===email){
+      const id=String(values[i][1]||'');
+      if(id) index.set(id,i+2);
+    }
+  }
+
+  const updates=[];
+  const appends=[];
+  const updatedCol=type==='hen'?9:7;
+  const now=new Date().toISOString();
+
+  (entities||[]).forEach(entity=>{
+    const id=String(entity.id||'');
+    if(!id||isDeleted_(email,type,id)) return;
     const row=type==='hen'
-      ? [email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',entity.deceasedAt||'',entity.updatedAt||now,isDeleted?'TRUE':'FALSE']
-      : [email,id,entity.date||'',Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,isDeleted?'TRUE':'FALSE'];
+      ? [email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',entity.deceasedAt||'',entity.updatedAt||now,'FALSE']
+      : [email,id,entity.date||'',Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,'FALSE'];
+    const existingRow=index.get(id);
     if(existingRow){
-      const existing=sh.getRange(existingRow,1,1,row.length).getValues()[0];
-      const updatedCol=type==='hen'?9:7;
+      const existing=sh.getRange(existingRow,1,1,numCols).getValues()[0];
       const serverTime=existing[updatedCol-1]?new Date(existing[updatedCol-1]).getTime():0;
       const clientTime=entity.updatedAt?new Date(entity.updatedAt).getTime():0;
-      if(isDeleted){
-        if(!serverTime||clientTime>=serverTime){
-          sh.getRange(existingRow,updatedCol,1,1).setValue(entity.updatedAt||now);
-          sh.getRange(existingRow,10,1,1).setValue('TRUE');
-        }
-      } else if(!serverTime||clientTime>=serverTime) {
-        sh.getRange(existingRow,1,1,row.length).setValues([row]);
-      }
+      if(!serverTime||clientTime>=serverTime) updates.push({row:existingRow,values:row});
     } else {
-      sh.appendRow(row);
+      appends.push(row);
     }
   });
+
+  // Existing rows may be scattered because multiple users share the sheet, so
+  // update only the rows that actually changed. This is normally a very small set.
+  updates.forEach(u=>sh.getRange(u.row,1,1,numCols).setValues([u.values]));
+
+  // All new rows are appended in one operation — critical for large imports.
+  if(appends.length){
+    const start=sh.getLastRow()+1;
+    sh.getRange(start,1,appends.length,numCols).setValues(appends);
+  }
+}
+
+function deletionKey_(email,type,id){
+  return 'POULETTOS_DELETED|' + String(type) + '|' + String(email).trim().toLowerCase() + '|' + String(id);
+}
+function isDeleted_(email,type,id){
+  return PropertiesService.getScriptProperties().getProperty(deletionKey_(email,type,id)) === '1';
+}
+function markDeleted_(email,type,id){
+  if(id) PropertiesService.getScriptProperties().setProperty(deletionKey_(email,type,id),'1');
+}
+function recordClientDeletions_(email,ids,type){
+  (ids||[]).forEach(id=>markDeleted_(email,type,String(id)));
+}
+function recordMissingAsDeleted_(email,sh,knownIds,type){
+  if(!sh||!knownIds.size)return;
+  const values=sh.getDataRange().getValues(),present=new Set();
+  for(let i=1;i<values.length;i++){
+    if(String(values[i][0]).trim().toLowerCase()!==email)continue;
+    const id=String(values[i][1]||'');
+    if(id)present.add(id);
+  }
+  knownIds.forEach(id=>{if(id&&!present.has(id))markDeleted_(email,type,id);});
+}
+function purgeDeletedRows_(sh,email,type){
+  if(!sh||sh.getLastRow()<2)return;
+  const numCols=type==='hen'?10:8;
+  const lastRow=sh.getLastRow();
+  const values=sh.getRange(1,1,lastRow,numCols).getValues();
+  const kept=[values[0]];
+  let changed=false;
+  for(let i=1;i<values.length;i++){
+    const r=values[i];
+    if(String(r[0]).trim().toLowerCase()!==email){ kept.push(r); continue; }
+    const id=String(r[1]||'');
+    const deletedCol=type==='hen'?10:8;
+    const flag=String(r[deletedCol-1]||'').trim().toUpperCase();
+    if(id&&(flag==='TRUE'||isDeleted_(email,type,id))){ changed=true; continue; }
+    kept.push(r);
+  }
+  if(!changed)return;
+  // One bulk rewrite avoids thousands of deleteRow() calls on large sheets.
+  sh.getRange(1,1,lastRow,numCols).clearContent();
+  sh.getRange(1,1,kept.length,numCols).setValues(kept);
+  if(kept.length<lastRow) sh.deleteRows(kept.length+1,lastRow-kept.length);
 }
 
 function readState_(email) {
   const ss=db_(),henRows=rowsForUser_(ss.getSheetByName(HENS_SHEET),email),eggRows=rowsForUser_(ss.getSheetByName(EGGS_SHEET),email);
-  const hens=henRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE').map(r=>({id:r.id,name:r.name,breed:r.breed,emoji:r.emoji||'🐔',photo:r.photo||'',status:r.status||'active',deceasedAt:r.deceasedAt||null,updatedAt:r.updatedAt||null}));
-  const entries=eggRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE').map(r=>({id:r.id,date:r.date,weight:Number(r.weight)||0,henId:r.henId||'unknown',note:r.note||'',updatedAt:r.updatedAt||null}));
-  const serverKnownIds={hens:henRows.map(r=>String(r.id)).filter(Boolean),entries:eggRows.map(r=>String(r.id)).filter(Boolean)};
-  const deletedIds={hens:[],entries:[]};
+  const hens=henRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!isDeleted_(email,'hen',String(r.id))).map(r=>({id:r.id,name:r.name,breed:r.breed,emoji:r.emoji||'🐔',photo:r.photo||'',status:r.status||'active',deceasedAt:r.deceasedAt||null,updatedAt:r.updatedAt||null}));
+  const entries=eggRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!isDeleted_(email,'egg',String(r.id))).map(r=>({id:r.id,date:r.date,weight:Number(r.weight)||0,henId:r.henId||'unknown',note:r.note||'',updatedAt:r.updatedAt||null}));
+  const serverKnownIds={hens:hens.map(r=>String(r.id)).filter(Boolean),entries:entries.map(r=>String(r.id)).filter(Boolean)};
   const user=userByEmail_(email)||{email,name:email.split('@')[0]};
-  return {user:{name:user.name||email.split('@')[0],email},hens,entries,meta:{updatedAt:new Date().toISOString(),syncedAt:new Date().toISOString(),serverKnownIds,deletedIds}};
+  return {user:{name:user.name||email.split('@')[0],email},hens,entries,meta:{updatedAt:new Date().toISOString(),syncedAt:new Date().toISOString(),serverKnownIds}};
+}
+
+function repairEggSheet_(){
+  const sh=db_().getSheetByName(EGGS_SHEET);
+  if(!sh)return;
+  const lastRow=sh.getLastRow(); if(lastRow<2)return;
+  const values=sh.getRange(2,1,lastRow-1,10).getValues();
+  values.forEach((r,i)=>{
+    const h=String(r[7]??'').trim().toUpperCase(),j=String(r[9]??'').trim().toUpperCase();
+    if(!h && (j==='TRUE'||j==='FALSE')){
+      sh.getRange(i+2,8).setValue(j); sh.getRange(i+2,10).clearContent();
+    }
+  });
 }
 
 function rowsForUser_(sh,email){
