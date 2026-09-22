@@ -3,7 +3,7 @@
   if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).then(r=>r.update()).catch(()=>{}); }
   const KEY='poulettos-state-v3';
   const CACHE_KEY='poulettos-local-cache-v3';
-  const APP_VERSION='3.8';
+  const APP_VERSION='3.10';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
@@ -228,11 +228,11 @@
   function decodeJwtPayload(token){
     try{const part=token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');return JSON.parse(atob(part.padEnd(part.length+((4-part.length%4)%4),'=')));}catch{return null}
   }
-  function initAuth(){
+  let authRefreshPending=false;
+  function initAuth(forcePrompt=false){
     const id=window.POULETTOS_CONFIG?.GOOGLE_CLIENT_ID;if(!id)return;
     const stored=googleIdToken?decodeJwtPayload(googleIdToken):null;
-    if(stored?.email && stored.exp && stored.exp*1000>Date.now()+30000){
-      // Reuse the locally persisted Google session on refresh; no account chooser.
+    if(!forcePrompt && stored?.email && stored.exp && stored.exp*1000>Date.now()+30000){
       if(!state.user?.email) state.user={name:stored.name||stored.email.split('@')[0],email:String(stored.email).toLowerCase()};
       if(state.user?.email){startApp({name:state.user.name||stored.name,email:state.user.email},googleIdToken);return;}
     }
@@ -242,19 +242,58 @@
         client_id:id,auto_select:true,use_fedcm_for_prompt:true,
         callback:r=>{try{
           const p=decodeJwtPayload(r.credential);if(!p?.email)throw new Error('invalid');
+          authRefreshPending=false;
           startApp({name:p.name||p.email.split('@')[0],email:p.email},r.credential);
-        }catch{toast('Connexion impossible')}}
+        }catch{authRefreshPending=false;toast('Connexion impossible')}}
       });
-      window.google.accounts.id.renderButton($('#googleBtn'),{theme:'outline',size:'large',shape:'pill',width:290});
-      // If local data/session already exists, keep the app usable offline and do not interrupt it with a Google prompt.
-      if(!state.user?.email){try{google.accounts.id.prompt()}catch(e){}}
+      const btn=$('#googleBtn');
+      if(btn)window.google.accounts.id.renderButton(btn,{theme:'outline',size:'large',shape:'pill',width:290});
+      // With a local session but an expired token, ask Google for a fresh credential.
+      // auto_select avoids forcing the account chooser when Google can identify the user.
+      try{window.google.accounts.id.prompt()}catch(e){}
     };
     if(window.google?.accounts?.id)render();else setTimeout(render,700);
+  }
+  function ensureFreshGoogleToken(){
+    const payload=googleIdToken?decodeJwtPayload(googleIdToken):null;
+    if(payload?.exp && payload.exp*1000>Date.now()+60000)return true;
+    if(authRefreshPending)return false;
+    authRefreshPending=true;
+    initAuth(true);
+    return false;
   }
 
   function formatSyncDate(value){if(!value)return 'Jamais';const d=new Date(value);if(Number.isNaN(d.getTime()))return 'Jamais';return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});}
   function setSync(text,lastAt){const p=$('#syncPill');if(p)p.textContent=text;const icon=$('#syncIcon');if(icon)icon.textContent=text.includes('Synchro')?'↻':text.startsWith('✓')?'✓':text.startsWith('!')?'!':'↻';const last=$('#syncLast');if(last)last.textContent=lastAt?formatSyncDate(lastAt):formatSyncDate(state.meta?.lastSyncAt);}
-  async function syncNow(){const cfg=window.POULETTOS_CONFIG||{};const localSnapshot=structuredClone(state);if(syncInProgress)return;if(!cfg.API_URL){setSync('! API non configurée');return}if(!navigator.onLine){setSync('! Hors ligne');return}if(!googleIdToken){setSync('! Connexion requise');return}syncInProgress=true;setSync('↻ Synchro…');const btn=$('#syncBtn');if(btn)btn.disabled=true;try{const syncState=structuredClone(state);syncState.entries=[...state.entries,...(state.deletedEntryIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];syncState.hens=[...state.hens,...(state.deletedHenIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];syncState.meta=syncState.meta||{};syncState.meta.serverKnownIds=state.meta?.serverKnownIds||{hens:[],entries:[]};const payload={action:'sync',idToken:googleIdToken,clientState:syncState,deviceId};const r=await fetch(cfg.API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});const data=await r.json();if(!data.ok)throw new Error(data.error||'sync failed');if(data.state){const returned=normalizeState(data.state);returned.meta.lastSyncAt=new Date().toISOString();returned.meta.serverKnownIds=data.state.meta?.serverKnownIds||data.state.meta?.knownIds||returned.meta.serverKnownIds||{hens:[],entries:[]};state=returned;save();}else{state.meta.lastSyncAt=new Date().toISOString();save();}setSync('✓ Synchronisé',state.meta.lastSyncAt);renderHome();renderHistory();renderHens();renderStats();}catch(err){setSync('! Échec');console.warn('Poulettos sync',err);toast('Synchronisation impossible')}finally{syncInProgress=false;if(btn)btn.disabled=false}}
+  async function syncNow(retryAfterAuth=false){const cfg=window.POULETTOS_CONFIG||{};if(syncInProgress)return;if(!cfg.API_URL){setSync('! API non configurée');return}if(!navigator.onLine){setSync('! Hors ligne');return}
+    if(!googleIdToken || !ensureFreshGoogleToken()){setSync('! Connexion Google…');return}
+    syncInProgress=true;setSync('↻ Synchro…');const btn=$('#syncBtn');if(btn)btn.disabled=true;
+    try{
+      const syncState=structuredClone(state);
+      syncState.entries=[...state.entries,...(state.deletedEntryIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];
+      syncState.hens=[...state.hens,...(state.deletedHenIds||[]).map(id=>({id,deleted:true,updatedAt:new Date().toISOString()}))];
+      syncState.meta=syncState.meta||{};syncState.meta.serverKnownIds=state.meta?.serverKnownIds||{hens:[],entries:[]};
+      const payload={action:'sync',idToken:googleIdToken,clientState:syncState,deviceId};
+      const r=await fetch(cfg.API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});
+      const raw=await r.text();
+      let data;try{data=JSON.parse(raw)}catch{throw new Error('Réponse serveur invalide ('+r.status+')')}
+      if(!data.ok){
+        const msg=String(data.error||'sync failed');
+        if(!retryAfterAuth && /token|audience|connexion|auth|invalid/i.test(msg)){
+          googleIdToken='';try{localStorage.removeItem(TOKEN_KEY)}catch{}
+          syncInProgress=false;if(btn)btn.disabled=false;
+          ensureFreshGoogleToken();
+          setSync('! Reconnexion Google…');
+          return;
+        }
+        throw new Error(msg);
+      }
+      if(data.state){const returned=normalizeState(data.state);returned.meta.lastSyncAt=new Date().toISOString();returned.meta.serverKnownIds=data.state.meta?.serverKnownIds||data.state.meta?.knownIds||returned.meta.serverKnownIds||{hens:[],entries:[]};state=returned;await save();}
+      else{state.meta.lastSyncAt=new Date().toISOString();await save();}
+      setSync('✓ Synchronisé',state.meta.lastSyncAt);renderHome();renderHistory();renderHens();renderStats();
+    }catch(err){setSync('! Échec');console.warn('Poulettos sync',err);toast('Synchronisation impossible : '+(err?.message||'erreur'))}
+    finally{syncInProgress=false;if(btn)btn.disabled=false}
+  }
   function syncSoon(){setTimeout(()=>syncNow(),0);}
   $('#syncBtn').addEventListener('click',syncNow);
   $('#profileBtn').addEventListener('click',toggleProfileMenu);
