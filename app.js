@@ -3,7 +3,7 @@
   if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).then(r=>r.update()).catch(()=>{}); }
   const KEY='poulettos-state-v3';
   const CACHE_KEY='poulettos-local-cache-v3';
-  const APP_VERSION='3.18';
+  const APP_VERSION='3.19';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
@@ -137,7 +137,7 @@
   function entriesFor(p){const r=rangeFor(p);return state.entries.filter(e=>{const d=dateOnly(entryDayKey(e.date));return d>=r.start&&d<r.end})}
 
   function navigate(view){$$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+view));$$('.bottom-nav button').forEach(b=>b.classList.toggle('active',b.dataset.nav===view));if(view==='home')renderHome();if(view==='stats')renderStats();if(view==='hens')renderHens();if(view==='history')renderHistory();if(view==='entry'&&!editingId)prepareNewEntry()}
-  $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
+  $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>{const view=b.dataset.nav;if(view==='entry')prepareNewEntry();else navigate(view)}));
 
   function henOptions(selected=''){return `<option value="${UNKNOWN}" ${selected===UNKNOWN?'selected':''}>❓ Poule inconnue</option>`+state.hens.filter(h=>h.status!=='dead').map(h=>`<option value="${h.id}" ${selected===h.id?'selected':''}>${escapeHtml(h.emoji||'🐔')} ${escapeHtml(h.name)}</option>`).join('')}
   function addEggRow(data={weight:'',henId:UNKNOWN}){const row=document.createElement('div');row.className='egg-row';row.dataset.rowId=uid();row.innerHTML=`<div class="egg-index">🥚</div><div class="egg-fields"><div><label>Poids</label><div class="weight-input"><input class="egg-weight" type="number" min="0" max="200" step="0.1" inputmode="decimal" placeholder="ex. 62" value="${data.weight??''}" required><span>g</span></div></div><div><label>Poule</label><select class="egg-hen">${henOptions(data.henId||UNKNOWN)}</select></div></div><button type="button" class="remove-egg" aria-label="Retirer">×</button>`;$('.egg-rows').appendChild(row);updateEggIndexes()}

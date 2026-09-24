@@ -17,7 +17,7 @@ function ensureSheets_() {
   specs.forEach(([name,headers]) => { let sh=ss.getSheetByName(name); if(!sh) sh=ss.insertSheet(name); if(sh.getLastRow()===0) sh.getRange(1,1,1,headers.length).setValues([headers]); });
 }
 
-function doGet() { ensureSheets_(); migrateHeaders_(); return json_({ok:true,service:'Poulettos',version:'3.18'}); }
+function doGet() { ensureSheets_(); migrateHeaders_(); return json_({ok:true,service:'Poulettos',version:'3.19'}); }
 
 function doPost(e) {
   try {
