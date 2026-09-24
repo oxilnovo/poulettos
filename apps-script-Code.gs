@@ -17,12 +17,11 @@ function ensureSheets_() {
   specs.forEach(([name,headers]) => { let sh=ss.getSheetByName(name); if(!sh) sh=ss.insertSheet(name); if(sh.getLastRow()===0) sh.getRange(1,1,1,headers.length).setValues([headers]); });
 }
 
-function doGet() { ensureSheets_(); repairEggSheet_(); return json_({ok:true,service:'Poulettos',version:'3.12'}); }
+function doGet() { ensureSheets_(); return json_({ok:true,service:'Poulettos',version:'3.17'}); }
 
 function doPost(e) {
   try {
     ensureSheets_();
-    repairEggSheet_();
     const body=JSON.parse(e.postData.contents||'{}');
     if(body.action!=='sync') return json_({ok:false,error:'Unknown action'});
     const auth=authenticate_(body.idToken);
@@ -32,12 +31,14 @@ function doPost(e) {
     // The lock is only held while the two user datasets are merged. The merge itself
     // uses bulk reads/writes so large datasets (thousands of eggs) do not hold the lock
     // for dozens of seconds.
-    const lock=LockService.getScriptLock();
-    if(!lock.tryLock(30000)) return json_({ok:false,error:'Synchronisation temporairement occupée. Réessayez dans quelques secondes.'});
+    const lock=LockService.getUserLock();
+    if(!lock.tryLock(15000)) return json_({ok:false,error:'Synchronisation temporairement occupée. Réessayez dans quelques secondes.'});
     try {
       mergeRows_(auth.email,body.clientState||{});
-      return json_({ok:true,state:readState_(auth.email),user:{email:auth.email,name:auth.name}});
     } finally { lock.releaseLock(); }
+    // Reading the resulting state can be expensive with large datasets. Do it
+    // after releasing the global lock so another user's sync is not blocked.
+    return json_({ok:true,state:readState_(auth.email),user:{email:auth.email,name:auth.name}});
   } catch(err) {
     return json_({ok:false,error:String(err&&err.message||err)});
   }
@@ -67,94 +68,174 @@ function mergeRows_(email,state) {
   const knownHens=new Set(known.hens||[]);
   const knownEntries=new Set(known.entries||[]);
 
-  // Permanent deletion model. Deleted IDs live in Script Properties rather than as
-  // tombstone rows in the spreadsheet.
+  // Record explicit client deletions first. They are kept in Script Properties,
+  // not in the spreadsheet, so deleted rows can be physically removed.
   recordClientDeletions_(email,state.deletedHenIds||[],'hen');
   recordClientDeletions_(email,state.deletedEntryIds||[],'egg');
-  recordMissingAsDeleted_(email,ss.getSheetByName(HENS_SHEET),knownHens,'hen');
-  recordMissingAsDeleted_(email,ss.getSheetByName(EGGS_SHEET),knownEntries,'egg');
 
-  purgeDeletedRows_(ss.getSheetByName(HENS_SHEET),email,'hen');
-  purgeDeletedRows_(ss.getSheetByName(EGGS_SHEET),email,'egg');
-
-  // Merge in bulk. New rows are appended with one setValues() call instead of
-  // one appendRow() call per egg. Existing rows are only written when their
-  // updatedAt is newer than the server copy.
-  mergeEntitySheetBulk_(ss.getSheetByName(HENS_SHEET),email,state.hens||[],'hen');
-  mergeEntitySheetBulk_(ss.getSheetByName(EGGS_SHEET),email,state.entries||[],'egg');
-
-  purgeDeletedRows_(ss.getSheetByName(HENS_SHEET),email,'hen');
-  purgeDeletedRows_(ss.getSheetByName(EGGS_SHEET),email,'egg');
+  // One fast pass per sheet. No deleteRow(), appendRow(), or per-cell writes.
+  mergeEntitySheetFast_(ss.getSheetByName(HENS_SHEET),email,state.hens||[],knownHens,'hen');
+  // Eggs are a shared dataset: every authorized user sees the same Eggs sheet.
+  mergeEntitySheetFast_(ss.getSheetByName(EGGS_SHEET),email,state.entries||[],knownEntries,'egg');
 }
 
-function mergeEntitySheetBulk_(sh,email,entities,type) {
+function mergeEntitySheetFast_(sh,email,entities,knownIds,type) {
   if(!sh) return;
-  const lastRow=sh.getLastRow();
   const numCols=type==='hen'?10:8;
-  const values=lastRow>=2?sh.getRange(2,1,lastRow-1,numCols).getValues():[];
-  const index=new Map();
-  for(let i=0;i<values.length;i++){
-    if(String(values[i][0]).trim().toLowerCase()===email){
-      const id=String(values[i][1]||'');
-      if(id) index.set(id,i+2);
-    }
-  }
-
-  const updates=[];
-  const appends=[];
-  const updatedCol=type==='hen'?9:7;
-  const now=new Date().toISOString();
-
+  const readCols=type==='egg'?10:numCols; // include legacy J column in Eggs for cleanup
+  const lastRow=sh.getLastRow();
+  const all=lastRow>=1?sh.getRange(1,1,lastRow,readCols).getValues():[];
+  if(!all.length) return;
+  const header=all[0].slice(0,numCols);
+  const rows=all.slice(1);
+  const emailKey=String(email).trim().toLowerCase();
+  const shared = type==='egg';
+  const incomingById=new Map();
+  const deletedSet=getDeletedSet_(email,type);
   (entities||[]).forEach(entity=>{
     const id=String(entity.id||'');
-    if(!id||isDeleted_(email,type,id)) return;
+    if(id) incomingById.set(id,entity);
+  });
+
+  // If an ID was known locally but has disappeared from the Sheet, that is a
+  // permanent deletion made in Google Sheets. Remember it so the client cannot
+  // recreate it on the next sync.
+  const presentIds=new Set();
+  rows.forEach(r=>{
+    if(shared || String(r[0]).trim().toLowerCase()===emailKey){
+      const id=String(r[1]||'');
+      if(id) presentIds.add(id);
+    }
+  });
+  const missingKnown=[]; knownIds.forEach(id=>{ if(id && !presentIds.has(String(id))) missingKnown.push(String(id)); });
+  if(missingKnown.length){ markDeletedMany_(email,type,missingKnown); missingKnown.forEach(id=>deletedSet.add(String(id))); }
+
+  let changed=false;
+  const deletedDuringMerge=[];
+  const kept=[];
+  kept.push(header);
+
+  // Keep all other users untouched. For this user, remove permanent deletions
+  // and apply newer client versions in memory.
+  const existingIds=new Set();
+  rows.forEach(r=>{
+    const row=r.slice(0,numCols);
+    const rowEmail=String(row[0]).trim().toLowerCase();
+    if(!shared && rowEmail!==emailKey){ kept.push(row); return; }
+    const id=String(row[1]||'');
+    const legacyJ=type==='egg' && String(r[9]??'').trim().toUpperCase()==='TRUE' && String(row[7]??'').trim()==='';
+    if(id && (String(row[type==='hen'?9:7]??'').trim().toUpperCase()==='TRUE' || deletedSet.has(id) || legacyJ)){
+      if(id) deletedDuringMerge.push(id);
+      changed=true;
+      return;
+    }
+    if(id) existingIds.add(id);
+    const entity=incomingById.get(id);
+    if(entity && !deletedSet.has(id)){
+      const updatedCol=type==='hen'?9:7;
+      const serverTime=row[updatedCol-1]?new Date(row[updatedCol-1]).getTime():0;
+      const clientTime=entity.updatedAt?new Date(entity.updatedAt).getTime():0;
+      if(!serverTime || clientTime>serverTime){
+        const now=new Date().toISOString();
+        const replacement=type==='hen'
+          ? [email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',normalizeDateOnly_(entity.deceasedAt),entity.updatedAt||now,'FALSE']
+          : [row[0]||email,id,normalizeDateOnly_(entity.date),Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,'FALSE'];
+        kept.push(replacement);
+        changed=true;
+        return;
+      }
+    }
+    kept.push(row);
+  });
+
+  if(deletedDuringMerge.length){ markDeletedMany_(email,type,deletedDuringMerge); deletedDuringMerge.forEach(id=>deletedSet.add(String(id))); }
+
+  // Append new client rows in memory. One setValues() writes the entire sheet
+  // only when something actually changed. For ~1,500 eggs this is still one
+  // spreadsheet operation instead of thousands of appendRow/setValue calls.
+  (entities||[]).forEach(entity=>{
+    const id=String(entity.id||'');
+    if(!id || existingIds.has(id) || deletedSet.has(id)) return;
+    const now=new Date().toISOString();
     const row=type==='hen'
       ? [email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',entity.deceasedAt||'',entity.updatedAt||now,'FALSE']
       : [email,id,entity.date||'',Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,'FALSE'];
-    const existingRow=index.get(id);
-    if(existingRow){
-      const existing=sh.getRange(existingRow,1,1,numCols).getValues()[0];
-      const serverTime=existing[updatedCol-1]?new Date(existing[updatedCol-1]).getTime():0;
-      const clientTime=entity.updatedAt?new Date(entity.updatedAt).getTime():0;
-      if(!serverTime||clientTime>=serverTime) updates.push({row:existingRow,values:row});
-    } else {
-      appends.push(row);
-    }
+    kept.push(row);
+    existingIds.add(id);
+    changed=true;
   });
 
-  // Existing rows may be scattered because multiple users share the sheet, so
-  // update only the rows that actually changed. This is normally a very small set.
-  updates.forEach(u=>sh.getRange(u.row,1,1,numCols).setValues([u.values]));
-
-  // All new rows are appended in one operation — critical for large imports.
-  if(appends.length){
-    const start=sh.getLastRow()+1;
-    sh.getRange(start,1,appends.length,numCols).setValues(appends);
+  // Remove accidental legacy columns beyond the official schema when possible.
+  if(type==='egg' && readCols>numCols){
+    for(let i=0;i<rows.length;i++){
+      const j=String(rows[i][9]??'').trim();
+      if(j){ changed=true; break; }
+    }
   }
+
+  if(!changed) return;
+  // Single bulk rewrite. This is intentionally outside any per-row operation.
+  // The resulting dataset can be larger than the current sheet. Clear only the
+  // currently used range, then size the destination range to the actual data.
+  // (The previous version tried to write kept.length rows into a lastRow-sized
+  // range, which made large first imports fail silently from the client side.)
+  if(lastRow>0) sh.getRange(1,1,lastRow,numCols).clearContent();
+  if(kept.length>0) sh.getRange(1,1,kept.length,numCols).setValues(kept);
+  if(kept.length<lastRow) sh.deleteRows(kept.length+1,lastRow-kept.length);
 }
 
-function deletionKey_(email,type,id){
-  return 'POULETTOS_DELETED|' + String(type) + '|' + String(email).trim().toLowerCase() + '|' + String(id);
+function deletionStoreKey_(email,type){
+  return type==='egg' ? 'POULETTOS_DELETED|egg|shared' : 'POULETTOS_DELETED|hen|' + String(email).trim().toLowerCase();
+}
+function getDeletedSet_(email,type){
+  const props=PropertiesService.getScriptProperties();
+  const out=new Set();
+  const raw=props.getProperty(deletionStoreKey_(email,type));
+  if(raw){try{JSON.parse(raw).map(String).forEach(id=>out.add(id));}catch(e){}}
+  // Migrate legacy per-user egg deletion stores into the shared egg store.
+  if(type==='egg'){
+    const all=props.getProperties();
+    Object.keys(all).filter(k=>k.indexOf('POULETTOS_DELETED|egg|')===0 && k!=='POULETTOS_DELETED|egg|shared').forEach(k=>{try{JSON.parse(all[k]).map(String).forEach(id=>out.add(id));}catch(e){}});
+  }
+  return out;
+}
+function saveDeletedSet_(email,type,set){
+  PropertiesService.getScriptProperties().setProperty(deletionStoreKey_(email,type),JSON.stringify(Array.from(set)));
 }
 function isDeleted_(email,type,id){
-  return PropertiesService.getScriptProperties().getProperty(deletionKey_(email,type,id)) === '1';
+  return getDeletedSet_(email,type).has(String(id));
 }
 function markDeleted_(email,type,id){
-  if(id) PropertiesService.getScriptProperties().setProperty(deletionKey_(email,type,id),'1');
+  if(!id)return;
+  const key=deletionStoreKey_(email,type);
+  const props=PropertiesService.getScriptProperties();
+  let set=new Set();
+  const raw=props.getProperty(key);
+  if(raw){try{set=new Set(JSON.parse(raw).map(String));}catch(e){}}
+  set.add(String(id));
+  props.setProperty(key,JSON.stringify(Array.from(set)));
 }
-function recordClientDeletions_(email,ids,type){
-  (ids||[]).forEach(id=>markDeleted_(email,type,String(id)));
+function markDeletedMany_(email,type,ids){
+  const clean=Array.from(new Set((ids||[]).map(String).filter(Boolean)));
+  if(!clean.length)return;
+  const props=PropertiesService.getScriptProperties(),key=deletionStoreKey_(email,type);
+  let set=new Set(); const raw=props.getProperty(key);
+  if(raw){try{set=new Set(JSON.parse(raw).map(String));}catch(e){}}
+  clean.forEach(id=>set.add(id));
+  props.setProperty(key,JSON.stringify(Array.from(set)));
 }
+function recordClientDeletions_(email,ids,type){ markDeletedMany_(email,type,ids); }
 function recordMissingAsDeleted_(email,sh,knownIds,type){
   if(!sh||!knownIds.size)return;
   const values=sh.getDataRange().getValues(),present=new Set();
   for(let i=1;i<values.length;i++){
     if(String(values[i][0]).trim().toLowerCase()!==email)continue;
-    const id=String(values[i][1]||'');
-    if(id)present.add(id);
+    const id=String(values[i][1]||''); if(id)present.add(id);
   }
-  knownIds.forEach(id=>{if(id&&!present.has(id))markDeleted_(email,type,id);});
+  const missing=[]; knownIds.forEach(id=>{if(id&&!present.has(String(id)))missing.push(String(id));});
+  markDeletedMany_(email,type,missing);
 }
+
 function purgeDeletedRows_(sh,email,type){
   if(!sh||sh.getLastRow()<2)return;
   const numCols=type==='hen'?10:8;
@@ -178,10 +259,39 @@ function purgeDeletedRows_(sh,email,type){
   if(kept.length<lastRow) sh.deleteRows(kept.length+1,lastRow-kept.length);
 }
 
+function normalizeDateOnly_(value){
+  if(value===null||value===undefined||value==='') return '';
+  if(Object.prototype.toString.call(value)==='[object Date]' && !isNaN(value.getTime())){
+    return Utilities.formatDate(value, Session.getScriptTimeZone()||'Europe/Paris','yyyy-MM-dd');
+  }
+  const s=String(value);
+  const m=s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if(m) return m[1];
+  const d=new Date(value);
+  return isNaN(d.getTime())?'':Utilities.formatDate(d, Session.getScriptTimeZone()||'Europe/Paris','yyyy-MM-dd');
+}
+function normalizeTimestamp_(value){
+  if(value===null||value===undefined||value==='') return null;
+  if(Object.prototype.toString.call(value)==='[object Date]' && !isNaN(value.getTime())) return value.toISOString();
+  const d=new Date(value);
+  return isNaN(d.getTime())?String(value):d.toISOString();
+}
+function rowsAll_(sh){
+  if(!sh)return [];
+  const values=sh.getDataRange().getValues(); if(values.length<2)return [];
+  const headers=values[0];
+  return values.slice(1).map(r=>{const o={};headers.forEach((h,i)=>o[h]=r[i]);return o;});
+}
 function readState_(email) {
-  const ss=db_(),henRows=rowsForUser_(ss.getSheetByName(HENS_SHEET),email),eggRows=rowsForUser_(ss.getSheetByName(EGGS_SHEET),email);
-  const hens=henRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!isDeleted_(email,'hen',String(r.id))).map(r=>({id:r.id,name:r.name,breed:r.breed,emoji:r.emoji||'🐔',photo:r.photo||'',status:r.status||'active',deceasedAt:r.deceasedAt||null,updatedAt:r.updatedAt||null}));
-  const entries=eggRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!isDeleted_(email,'egg',String(r.id))).map(r=>({id:r.id,date:r.date,weight:Number(r.weight)||0,henId:r.henId||'unknown',note:r.note||'',updatedAt:r.updatedAt||null}));
+  const ss=db_(),henRows=rowsForUser_(ss.getSheetByName(HENS_SHEET),email),eggRows=rowsAll_(ss.getSheetByName(EGGS_SHEET));
+  const deletedHens=getDeletedSet_(email,'hen'), deletedEggs=getDeletedSet_(email,'egg');
+  const hens=henRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!deletedHens.has(String(r.id))).map(r=>({
+    id:r.id,name:r.name,breed:r.breed,emoji:r.emoji||'🐔',photo:r.photo||'',status:r.status||'active',
+    deceasedAt:normalizeDateOnly_(r.deceasedAt)||null,updatedAt:normalizeTimestamp_(r.updatedAt)
+  }));
+  const entries=eggRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!deletedEggs.has(String(r.id))).map(r=>({
+    id:r.id,date:normalizeDateOnly_(r.date),weight:Number(r.weight)||0,henId:r.henId||'unknown',note:r.note||'',updatedAt:normalizeTimestamp_(r.updatedAt)
+  }));
   const serverKnownIds={hens:hens.map(r=>String(r.id)).filter(Boolean),entries:entries.map(r=>String(r.id)).filter(Boolean)};
   const user=userByEmail_(email)||{email,name:email.split('@')[0]};
   return {user:{name:user.name||email.split('@')[0],email},hens,entries,meta:{updatedAt:new Date().toISOString(),syncedAt:new Date().toISOString(),serverKnownIds}};
@@ -192,13 +302,16 @@ function repairEggSheet_(){
   if(!sh)return;
   const lastRow=sh.getLastRow(); if(lastRow<2)return;
   const values=sh.getRange(2,1,lastRow-1,10).getValues();
-  values.forEach((r,i)=>{
+  let changed=false;
+  values.forEach(r=>{
     const h=String(r[7]??'').trim().toUpperCase(),j=String(r[9]??'').trim().toUpperCase();
-    if(!h && (j==='TRUE'||j==='FALSE')){
-      sh.getRange(i+2,8).setValue(j); sh.getRange(i+2,10).clearContent();
-    }
+    if(!h && (j==='TRUE'||j==='FALSE')){ r[7]=j; r[9]=''; changed=true; }
   });
+  if(changed) sh.getRange(2,1,values.length,10).setValues(values);
 }
+
+// Run this manually once only if an old version left TRUE/FALSE in column J of Eggs.
+function repairEggSheetManually(){ repairEggSheet_(); }
 
 function rowsForUser_(sh,email){
   const values=sh.getDataRange().getValues(); if(values.length<2)return [];
