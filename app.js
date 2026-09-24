@@ -3,7 +3,7 @@
   if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js', {scope:'./'}).then(r=>r.update()).catch(()=>{}); }
   const KEY='poulettos-state-v3';
   const CACHE_KEY='poulettos-local-cache-v3';
-  const APP_VERSION='3.19';
+  const APP_VERSION='3.20';
   const TOKEN_KEY='poulettos-google-id-token-v1';
   const UNKNOWN='unknown';
   const defaultState={
@@ -17,7 +17,7 @@
   const DB_NAME='poulettos-local-db-v1', DB_STORE='state', DB_KEY='current';
   let period='week', periodAnchor=isoDate(new Date());
   let historySort='date', historyOrder='desc';
-  let totalRangeEnabled=false,totalRangeStart='',totalRangeEnd='',editingId=null,googleIdToken='',syncInProgress=false;
+  let totalRangeEnabled=false,totalRangeStart='',totalRangeEnd='',editingId=null,googleIdToken='',syncInProgress=false,currentView='home';
   try{googleIdToken=localStorage.getItem(TOKEN_KEY)||'';}catch{}
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const uid=()=>crypto.randomUUID?crypto.randomUUID():'id-'+Date.now()+'-'+Math.random().toString(36).slice(2);
@@ -136,14 +136,32 @@
   }
   function entriesFor(p){const r=rangeFor(p);return state.entries.filter(e=>{const d=dateOnly(entryDayKey(e.date));return d>=r.start&&d<r.end})}
 
-  function navigate(view){$$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+view));$$('.bottom-nav button').forEach(b=>b.classList.toggle('active',b.dataset.nav===view));if(view==='home')renderHome();if(view==='stats')renderStats();if(view==='hens')renderHens();if(view==='history')renderHistory();if(view==='entry'&&!editingId)prepareNewEntry()}
-  $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>{const view=b.dataset.nav;if(view==='entry')prepareNewEntry();else navigate(view)}));
+  function navigate(view, options={push:true}){
+    if(!view)return;
+    if(view==='entry' && options.newEntry!==false) prepareNewEntry();
+    currentView=view;
+    $$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+view));
+    $$('.bottom-nav button').forEach(b=>b.classList.toggle('active',b.dataset.nav===view));
+    if(view==='home')renderHome();
+    if(view==='stats')renderStats();
+    if(view==='hens')renderHens();
+    if(view==='history')renderHistory();
+    if(options.push){
+      try{history.pushState({view},'',`#${view}`)}catch{}
+    }
+  }
+  $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
+  window.addEventListener('popstate',e=>{
+    const view=e.state?.view || (location.hash ? location.hash.slice(1) : 'home');
+    if(['home','history','stats','hens','entry'].includes(view)) navigate(view,{push:false,newEntry:view!=='entry'});
+    else navigate('home',{push:false});
+  });
 
   function henOptions(selected=''){return `<option value="${UNKNOWN}" ${selected===UNKNOWN?'selected':''}>❓ Poule inconnue</option>`+state.hens.filter(h=>h.status!=='dead').map(h=>`<option value="${h.id}" ${selected===h.id?'selected':''}>${escapeHtml(h.emoji||'🐔')} ${escapeHtml(h.name)}</option>`).join('')}
   function addEggRow(data={weight:'',henId:UNKNOWN}){const row=document.createElement('div');row.className='egg-row';row.dataset.rowId=uid();row.innerHTML=`<div class="egg-index">🥚</div><div class="egg-fields"><div><label>Poids</label><div class="weight-input"><input class="egg-weight" type="number" min="0" max="200" step="0.1" inputmode="decimal" placeholder="ex. 62" value="${data.weight??''}" required><span>g</span></div></div><div><label>Poule</label><select class="egg-hen">${henOptions(data.henId||UNKNOWN)}</select></div></div><button type="button" class="remove-egg" aria-label="Retirer">×</button>`;$('.egg-rows').appendChild(row);updateEggIndexes()}
   function updateEggIndexes(){$$('.egg-row').forEach((r,i)=>r.querySelector('.egg-index').textContent='🥚 '+(i+1))}
   function prepareNewEntry(){editingId=null;$('#entryEyebrow').textContent='Saisie rapide';$('#entryTitle').textContent='Nouveaux œufs';$('#saveEntryBtn').textContent='Enregistrer';$('#cancelEdit').classList.add('hidden');$('#addEggRow').classList.remove('hidden');$('#editMeta').classList.add('hidden');$('#entryDate').value=isoDate(new Date());$('#note').value='';$('.egg-rows').innerHTML='';addEggRow()}
-  function editEntry(id){const e=state.entries.find(x=>x.id===id);if(!e)return;editingId=id;$('#entryEyebrow').textContent='Modification';$('#entryTitle').textContent='Modifier l’œuf';$('#saveEntryBtn').textContent='Enregistrer les changements';$('#cancelEdit').classList.remove('hidden');$('#addEggRow').classList.add('hidden');$('#entryDate').value=entryDayKey(e.date);$('#note').value=e.note||'';$('#editMeta').classList.remove('hidden');$('#createdInfo').textContent=e.createdBy||'Non renseigné';$('#editedInfo').textContent=e.editedBy||'';$('#editedInfoRow').classList.toggle('hidden',!e.editedBy);$('.egg-rows').innerHTML='';addEggRow({weight:e.weight,henId:e.henId||UNKNOWN});navigate('entry')}
+  function editEntry(id){const e=state.entries.find(x=>x.id===id);if(!e)return;editingId=id;$('#entryEyebrow').textContent='Modification';$('#entryTitle').textContent='Modifier l’œuf';$('#saveEntryBtn').textContent='Enregistrer les changements';$('#cancelEdit').classList.remove('hidden');$('#addEggRow').classList.add('hidden');$('#entryDate').value=entryDayKey(e.date);$('#note').value=e.note||'';$('#editMeta').classList.remove('hidden');$('#createdInfo').textContent=e.createdBy||'Non renseigné';$('#editedInfo').textContent=e.editedBy||'';$('#editedInfoRow').classList.toggle('hidden',!e.editedBy);$('.egg-rows').innerHTML='';addEggRow({weight:e.weight,henId:e.henId||UNKNOWN});navigate('entry',{newEntry:false})}
   $('#addEggRow').onclick=()=>addEggRow();$('.egg-rows').addEventListener('click',e=>{const b=e.target.closest('.remove-egg');if(!b)return;const rows=$$('.egg-row');if(rows.length===1){toast('Il faut au moins un œuf');return}b.closest('.egg-row').remove();updateEggIndexes()});$('#cancelEdit').onclick=()=>{editingId=null;navigate('history')};
 
   $('#entryForm').addEventListener('submit',e=>{e.preventDefault();const date=$('#entryDate').value,rows=$$('.egg-row').map(r=>({weight:Number(r.querySelector('.egg-weight').value),henId:r.querySelector('.egg-hen').value}));if(!date||rows.some(x=>!Number.isFinite(x.weight)||x.weight<=0)){toast('Renseignez le poids de chaque œuf');return}const stamp=`${date}T12:00:00`;
@@ -344,7 +362,8 @@
     if(localCacheExists){
       $('#loginScreen').classList.add('hidden');
       $('#app').classList.remove('hidden');
-      navigate('home');
+      const initialView=(location.hash&&['home','history','stats','hens','entry'].includes(location.hash.slice(1)))?location.hash.slice(1):'home';
+      navigate(initialView,{push:false,newEntry:initialView!=='entry'});
       setSync(state.meta?.lastSyncAt?'✓ Synchronisé':'● Local',state.meta?.lastSyncAt);
     }
     if(navigator.onLine) initAuth();
