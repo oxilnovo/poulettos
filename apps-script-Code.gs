@@ -11,17 +11,18 @@ function ensureSheets_() {
   const ss = db_();
   const specs = [
     [USERS_SHEET, ['email','name','active']],
-    [HENS_SHEET, ['userEmail','id','name','breed','emoji','photo','status','deceasedAt','updatedAt','deleted']],
-    [EGGS_SHEET, ['userEmail','id','date','weight','henId','note','updatedAt','deleted']]
+    [HENS_SHEET, ['userEmail','id','name','breed','emoji','photo','status','deceasedAt','updatedAt','deleted','createdBy','createdAt','editedBy']],
+    [EGGS_SHEET, ['userEmail','id','date','weight','henId','note','updatedAt','deleted','createdBy','createdAt','editedBy']]
   ];
   specs.forEach(([name,headers]) => { let sh=ss.getSheetByName(name); if(!sh) sh=ss.insertSheet(name); if(sh.getLastRow()===0) sh.getRange(1,1,1,headers.length).setValues([headers]); });
 }
 
-function doGet() { ensureSheets_(); return json_({ok:true,service:'Poulettos',version:'3.17'}); }
+function doGet() { ensureSheets_(); migrateHeaders_(); return json_({ok:true,service:'Poulettos',version:'3.18'}); }
 
 function doPost(e) {
   try {
     ensureSheets_();
+    migrateHeaders_();
     const body=JSON.parse(e.postData.contents||'{}');
     if(body.action!=='sync') return json_({ok:false,error:'Unknown action'});
     const auth=authenticate_(body.idToken);
@@ -31,7 +32,7 @@ function doPost(e) {
     // The lock is only held while the two user datasets are merged. The merge itself
     // uses bulk reads/writes so large datasets (thousands of eggs) do not hold the lock
     // for dozens of seconds.
-    const lock=LockService.getUserLock();
+    const lock=LockService.getScriptLock();
     if(!lock.tryLock(15000)) return json_({ok:false,error:'Synchronisation temporairement occupée. Réessayez dans quelques secondes.'});
     try {
       mergeRows_(auth.email,body.clientState||{});
@@ -81,15 +82,15 @@ function mergeRows_(email,state) {
 
 function mergeEntitySheetFast_(sh,email,entities,knownIds,type) {
   if(!sh) return;
-  const numCols=type==='hen'?10:8;
-  const readCols=type==='egg'?10:numCols; // include legacy J column in Eggs for cleanup
+  const numCols=type==='hen'?13:11;
+  const readCols=numCols; // include legacy J column in Eggs for cleanup
   const lastRow=sh.getLastRow();
   const all=lastRow>=1?sh.getRange(1,1,lastRow,readCols).getValues():[];
   if(!all.length) return;
   const header=all[0].slice(0,numCols);
   const rows=all.slice(1);
   const emailKey=String(email).trim().toLowerCase();
-  const shared = type==='egg';
+  const shared = true;
   const incomingById=new Map();
   const deletedSet=getDeletedSet_(email,type);
   (entities||[]).forEach(entity=>{
@@ -138,8 +139,8 @@ function mergeEntitySheetFast_(sh,email,entities,knownIds,type) {
       if(!serverTime || clientTime>serverTime){
         const now=new Date().toISOString();
         const replacement=type==='hen'
-          ? [email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',normalizeDateOnly_(entity.deceasedAt),entity.updatedAt||now,'FALSE']
-          : [row[0]||email,id,normalizeDateOnly_(entity.date),Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,'FALSE'];
+          ? [row[0]||entity.createdBy||email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',normalizeDateOnly_(entity.deceasedAt),entity.updatedAt||now,'FALSE',row[10]||entity.createdBy||email,row[11]||entity.createdAt||entity.updatedAt||now,entity.editedBy||email]
+          : [row[0]||email,id,normalizeDateOnly_(entity.date),Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,'FALSE',row[8]||entity.createdBy||email,row[9]||entity.createdAt||entity.updatedAt||now,entity.editedBy||''];
         kept.push(replacement);
         changed=true;
         return;
@@ -158,20 +159,15 @@ function mergeEntitySheetFast_(sh,email,entities,knownIds,type) {
     if(!id || existingIds.has(id) || deletedSet.has(id)) return;
     const now=new Date().toISOString();
     const row=type==='hen'
-      ? [email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',entity.deceasedAt||'',entity.updatedAt||now,'FALSE']
-      : [email,id,entity.date||'',Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,'FALSE'];
+      ? [email,id,entity.name||'',entity.breed||'',entity.emoji||'',entity.photo||'',entity.status||'active',normalizeDateOnly_(entity.deceasedAt),entity.updatedAt||now,'FALSE',entity.createdBy||email,entity.createdAt||entity.updatedAt||now,entity.editedBy||'']
+      : [email,id,normalizeDateOnly_(entity.date),Number(entity.weight)||0,entity.henId||'unknown',entity.note||'',entity.updatedAt||now,'FALSE',entity.createdBy||email,entity.createdAt||entity.updatedAt||now,entity.editedBy||''];
     kept.push(row);
     existingIds.add(id);
     changed=true;
   });
 
   // Remove accidental legacy columns beyond the official schema when possible.
-  if(type==='egg' && readCols>numCols){
-    for(let i=0;i<rows.length;i++){
-      const j=String(rows[i][9]??'').trim();
-      if(j){ changed=true; break; }
-    }
-  }
+  
 
   if(!changed) return;
   // Single bulk rewrite. This is intentionally outside any per-row operation.
@@ -185,7 +181,7 @@ function mergeEntitySheetFast_(sh,email,entities,knownIds,type) {
 }
 
 function deletionStoreKey_(email,type){
-  return type==='egg' ? 'POULETTOS_DELETED|egg|shared' : 'POULETTOS_DELETED|hen|' + String(email).trim().toLowerCase();
+  return type==='egg' ? 'POULETTOS_DELETED|egg|shared' : 'POULETTOS_DELETED|hen|shared';
 }
 function getDeletedSet_(email,type){
   const props=PropertiesService.getScriptProperties();
@@ -238,7 +234,7 @@ function recordMissingAsDeleted_(email,sh,knownIds,type){
 
 function purgeDeletedRows_(sh,email,type){
   if(!sh||sh.getLastRow()<2)return;
-  const numCols=type==='hen'?10:8;
+  const numCols=type==='hen'?13:11;
   const lastRow=sh.getLastRow();
   const values=sh.getRange(1,1,lastRow,numCols).getValues();
   const kept=[values[0]];
@@ -283,18 +279,32 @@ function rowsAll_(sh){
   return values.slice(1).map(r=>{const o={};headers.forEach((h,i)=>o[h]=r[i]);return o;});
 }
 function readState_(email) {
-  const ss=db_(),henRows=rowsForUser_(ss.getSheetByName(HENS_SHEET),email),eggRows=rowsAll_(ss.getSheetByName(EGGS_SHEET));
+  const ss=db_(),henRows=rowsAll_(ss.getSheetByName(HENS_SHEET)),eggRows=rowsAll_(ss.getSheetByName(EGGS_SHEET));
   const deletedHens=getDeletedSet_(email,'hen'), deletedEggs=getDeletedSet_(email,'egg');
   const hens=henRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!deletedHens.has(String(r.id))).map(r=>({
     id:r.id,name:r.name,breed:r.breed,emoji:r.emoji||'🐔',photo:r.photo||'',status:r.status||'active',
-    deceasedAt:normalizeDateOnly_(r.deceasedAt)||null,updatedAt:normalizeTimestamp_(r.updatedAt)
+    deceasedAt:normalizeDateOnly_(r.deceasedAt)||null,updatedAt:normalizeTimestamp_(r.updatedAt),createdBy:r.createdBy||r.userEmail||'',createdAt:normalizeTimestamp_(r.createdAt)||normalizeTimestamp_(r.updatedAt),editedBy:r.editedBy||''
   }));
   const entries=eggRows.filter(r=>String(r.deleted).toUpperCase()!=='TRUE'&&!deletedEggs.has(String(r.id))).map(r=>({
-    id:r.id,date:normalizeDateOnly_(r.date),weight:Number(r.weight)||0,henId:r.henId||'unknown',note:r.note||'',updatedAt:normalizeTimestamp_(r.updatedAt)
+    id:r.id,date:normalizeDateOnly_(r.date),weight:Number(r.weight)||0,henId:r.henId||'unknown',note:r.note||'',updatedAt:normalizeTimestamp_(r.updatedAt),createdBy:r.createdBy||r.userEmail||'',createdAt:normalizeTimestamp_(r.createdAt)||normalizeTimestamp_(r.updatedAt),editedBy:r.editedBy||''
   }));
   const serverKnownIds={hens:hens.map(r=>String(r.id)).filter(Boolean),entries:entries.map(r=>String(r.id)).filter(Boolean)};
   const user=userByEmail_(email)||{email,name:email.split('@')[0]};
   return {user:{name:user.name||email.split('@')[0],email},hens,entries,meta:{updatedAt:new Date().toISOString(),syncedAt:new Date().toISOString(),serverKnownIds}};
+}
+
+function migrateHeaders_(){
+  repairEggSheet_();
+  const ss=db_();
+  const specs=[
+    [HENS_SHEET,['userEmail','id','name','breed','emoji','photo','status','deceasedAt','updatedAt','deleted','createdBy','createdAt','editedBy']],
+    [EGGS_SHEET,['userEmail','id','date','weight','henId','note','updatedAt','deleted','createdBy','createdAt','editedBy']]
+  ];
+  specs.forEach(([name,headers])=>{
+    const sh=ss.getSheetByName(name); if(!sh)return;
+    const existing=sh.getRange(1,1,1,Math.max(sh.getLastColumn(),headers.length)).getValues()[0];
+    headers.forEach((h,i)=>{if(String(existing[i]||'').trim()!==h) sh.getRange(1,i+1).setValue(h);});
+  });
 }
 
 function repairEggSheet_(){

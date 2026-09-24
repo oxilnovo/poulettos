@@ -72,7 +72,7 @@
           <div class="date-grid single-date">
             <div><label for="entryDate">Date</label><input id="entryDate" type="date" required /></div>
           </div>
-          <div class="batch-head"><label>Œufs</label><button type="button" class="small-add" id="addEggRow">＋ Ajouter un œuf</button></div>
+          <div class="batch-head"><label>Œufs</label><button type="button" class="small-add" id="addEggRow">＋ Ajouter un œuf</button></div><div id="editMeta" class="form-intro hidden"><strong>Informations</strong><span>Créé par : <b id="createdInfo">—</b></span><span id="editedInfoRow" class="hidden">Modifié par : <b id="editedInfo">—</b></span></div>
           <div id="eggRows" class="egg-rows"></div>
           <label for="note">Une note ? <span>(facultatif)</span></label>
           <textarea id="note" rows="2" placeholder="Ex. œufs plus petits aujourd'hui…"></textarea>
@@ -108,7 +108,7 @@
 
       <section id="view-history" class="view">
         <div class="page-title"><button class="back-btn" data-nav="home">‹</button><div><div class="eyebrow">Journal</div><h2>Historique</h2></div></div>
-        <div class="history-toolbar"><div class="history-count-wrap"><span id="historyCount">0 œuf</span><span>Appuyez sur une ligne pour modifier</span></div><div class="history-sort"><label for="historySort">Trier par</label><select id="historySort"><option value="date">Date</option><option value="hen">Poule</option><option value="weight">Poids</option></select><select id="historyOrder" aria-label="Ordre de tri"><option value="desc">Décroissant</option><option value="asc">Croissant</option></select></div></div>
+        <div class="history-toolbar"><div class="history-count-wrap"><span id="historyCount">0 œuf</span><span>Appuyez sur une ligne pour modifier</span></div><div class="history-search"><input id="historySearch" type="search" placeholder="Rechercher…" aria-label="Rechercher dans l’historique"></div><div class="history-sort"><label for="historySort">Trier par</label><select id="historySort"><option value="date">Date</option><option value="hen">Poule</option><option value="weight">Poids</option><option value="note">Note</option><option value="createdBy">Créé par</option><option value="editedBy">Modifié par</option><option value="id">ID</option></select><select id="historyOrder" aria-label="Ordre de tri"><option value="desc">Décroissant</option><option value="asc">Croissant</option></select></div></div>
         <div id="historyList" class="history-list"></div>
       </section>
     </main>
